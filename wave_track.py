@@ -408,9 +408,10 @@ class WaveTracker:
 
         for i in range(n_bins):
             mask = (speeds >= speed_bins[i]) & (speeds < speed_bins[i + 1]) #select contributions that fall within the current speed bin
-            Lambda[i] = lengths[mask].sum() * dt #sum the total crest lengths - dt was added in to fix the units
+            Lambda[i] = lengths[mask].sum() #* dt #sum the total crest lengths - dt was added in to fix the units
 
-        Lambda /= (total_area * total_time_sec * dc) #normalize by the area and total time to get a rate per unit area per unit time per speed bin #units of s/m^2
+        # Lambda /= (total_area * total_time_sec * dc) #normalize by the area to get a rate per unit area per unit time per speed bin #units of s/m^2
+        Lambda /= (total_area * dc)
 
         return Lambda
 
@@ -559,7 +560,9 @@ if __name__ == "__main__":
     #clip image to area of interest (where waves are visible) to calculate area in meters squared
     y_min, y_max = 700, 1500
     full_area_pixels = cv2.imread(rgb_images[0], cv2.IMREAD_GRAYSCALE)[700:1500, ...].shape[0] * cv2.imread(rgb_images[0], cv2.IMREAD_GRAYSCALE)[700:1500, ...].shape[1]
-    full_area_meters = full_area_pixels * (gsd**2)
+
+    N_frames = len(rgb_images)
+    full_area_meters = full_area_pixels * (gsd**2) * N_frames
 
     #define total observation time in seconds
     fps = 29.97
@@ -637,13 +640,14 @@ if __name__ == "__main__":
     plt.close('all')
 
 #TODO: check the result of the distribution - first check if the observed wave spectrum for the estuary follows the decay
-# shape of the phillips 1958 equilibrium spectrum f^-5 - must follow/abide by all assumptions too. If this is true
-# plot the c^-6 line
+# shape of the phillips 1958 equilibrium spectrum f^-5 - must follow/abide by all assumptions too.
 
 #TODO: MORE ROBUST WAVE TRACKING - use ellipse equation to make sure the the following waves is inside the ellipse of the previous wave. This is consistent with overlapping contour methods from other literature.
+#TODO: smooth the contours using the technique used by Akaawase et al.
 
 #TODO: ensure ellipse area remains similar between frames cannot drop immensly
 
+#TODO: make sure that speeds are filtered the same as in the elemental method - start with tossing everything under 0.6 m/s
 
 
 
