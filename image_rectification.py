@@ -283,6 +283,272 @@ def getPixels(image, Ud, Vd, s):
     return ir
 
 
+def uv2XYZ(intrinsics, extrinsics, uv_points, z_ground=0):
+    """
+    Back-projects UV pixel coordinates to world XYZ at a known ground elevation
+
+    intrinsics  : 1x11 array [nx, ny, ccx, ccy, fcx, fcy, k1, k2, k3, p1, p2]
+    extrinsics  : 1x6  array [x, y, z, azimuth, tilt, swing]
+    uv_points   : Nx2  array of (U, V) pixel coordinates
+    z_ground    : ground plane elevation (default 0 MSL)
+
+    returns     : Nx2 array of (easting, northing) world coordinates
+    """
+    K, R, IC, P, C = intrinsicsExtrinsics2P(intrinsics, extrinsics)
+
+    cam_pos = np.array([extrinsics[0], extrinsics[1], extrinsics[2]])  # camera XYZ in world
+
+    world_points = []
+    for (u, v) in uv_points:
+        # Homogeneous pixel coordinate
+        uv_h = np.array([u, v, 1.0])
+
+        # Back-project: ray direction in world coords
+        # P = K @ R @ IC, so K_inv @ R_inv un-rotates the pixel ray into world space
+        K = np.array(K)
+        ray_cam = np.linalg.inv(K) @ uv_h  # ray in camera frame (normalized)
+        ray_world = R.T @ ray_cam  # rotate to world frame
+
+        # Intersect ray with ground plane: cam_pos + t * ray_world, solve for z = z_ground
+        # t = (z_ground - cam_z) / ray_world[2]
+        t = (z_ground - cam_pos[2]) / ray_world[2]
+        ground_pt = cam_pos + t * ray_world
+
+        world_points.append(ground_pt[:2])  # easting, northing
+
+    return np.array(world_points)
+
+# def rectifyImages(images, drone_intrinsics_path, drone_extrinsics_path, save_path, plot=True):
+#
+#     #create intrinsics and extrinsics arrays for rectification
+#     #FIXME: Really sloppy code, need to change how the mat file is opened so a variable is not being indexed four times
+#     '''INTRINSICS'''
+#     drone_metadata = scipy.io.loadmat(drone_intrinsics_path)
+#     calib = drone_metadata['CopterCurrents_CamCalib']
+#     fc = calib['fc']  # focal length x and y
+#     fcx, fcy = fc[0][0][0][0], fc[0][0][1][0]
+#
+#     cc = calib['cc']  # principal point x and y
+#     ccx, ccy = cc[0][0][0][0], cc[0][0][1][0]
+#
+#     kc = calib['kc']  # distortion coefficients - k1, k2, k3, p1, p2 - radial and tangential distortion coefficients
+#     k1, k2, k3, p1, p2 = kc[0][0][0][0], kc[0][0][1][0], kc[0][0][2][0], kc[0][0][3][0], kc[0][0][4][0]
+#
+#     alpha_c = calib['alpha_c'][0][0][0][0]  # skew coefficient
+#     nx = calib['nx'][0][0][0][0]  # image width
+#     ny = calib['ny'][0][0][0][0]  # image height
+#
+#     # create 1x11 intrinsics array from the calibration parameters
+#     intrinsics = np.array([[nx, ny, ccx, ccy, fcx, fcy, k1, k2, k3, p1, p2]])
+#
+#     '''EXTRINSICS'''
+#     # create 1x6 extrinsics array x,y,z,a,t,s
+#     ext_metadata = np.load(drone_extrinsics_path)
+#     azimuth = float(ext_metadata[4][1]) * (np.pi / 180)  # drone heading - equivalent to azimuth - convert to radians
+#     tilt = 0 * (np.pi / 180)  # drone tile, nadir view, fixed value - assumed so in Alex's paper
+#     swing = 0 * (np.pi / 180)  # drone swing, fixed value - assumed so in Alex's paper
+#     z = float(ext_metadata[1][
+#                   1])  # altitude in meters - This is assumed absolute altitude above the ground as recorded by the DJI drone in the flight logs. Should be relative to MSL.
+#     x = float(ext_metadata[3][1])  # longitude in decimal degrees
+#     y = float(ext_metadata[2][1])  # latitude in decimal degrees
+#
+#     # pull ground sampling distance for grid
+#     dx = float(ext_metadata[-2][1])  # dx and dy are the same value
+#     gsd = dx
+#
+#     # convert x, y, z from wgs84 to UTM 18N for connecticut river - long island sound
+#     transformer = Transformer.from_crs("epsg:4326", "epsg:32618", always_xy=True)
+#     easting, northing = transformer.transform(x, y)
+#
+#     # create 1x6 extrinsics array from the extrinsic parameters
+#     extrinsics = np.array([[easting, northing, z, azimuth, tilt, swing]])
+#
+#     fov_x = 2 * np.arctan(intrinsics[0][1] / (2 * intrinsics[0][5]))  # horizontal FOV
+#     fov_y = 2 * np.arctan(intrinsics[0][0] / (2 * intrinsics[0][4]))  # vertical FOV
+#
+#     half_width = z * np.tan(fov_x / 2)
+#     half_height = z * np.tan(fov_y / 2)
+#
+#     margin = 1.6
+#     x_grid = np.arange(easting - half_width * margin, easting + half_width * margin,  #TODO: fix this
+#                        gsd)  # resolution must be equivalent to the ground sampline distance
+#     y_grid = np.arange(northing - half_height * 1.2, northing + half_height * 1.2, gsd)
+#
+#
+#     xx, yy = np.meshgrid(x_grid, y_grid)
+#     zz = np.zeros_like(xx)  # flat ground at z=0 MSL
+#
+#     xyz_grid = np.column_stack((xx.ravel(), yy.ravel(), zz.ravel()))  # shape (N, 3) where N is number of grid points
+#
+#     #set up memmap to save rectified arrays
+#     N_frames = len(images)
+#     H, W = images[0].shape
+#     memmap_shape = (N_frames, H, W)
+#     rectified_image_memmap = np.memmap(save_path, dtype='uint8', mode='w+', shape=memmap_shape) #can also save as float32 for more precise data
+#
+#     for n in tqdm(range(len(images))):
+#         if type(images[n]) == 'str':
+#             img = cv2.cvtColor(cv2.imread(images[n]), cv2.COLOR_BGR2RGB)
+#
+#         else:
+#             img = images[n]
+#
+#         # img_w = img.shape[1]
+#         # img_h = img.shape[0]
+#         Ud, Vd = xyz2DistUV(intrinsics[0], extrinsics[0], xyz_grid)
+#
+#         s = xx.shape
+#         DU = Ud.reshape(s)
+#         DV = Vd.reshape(s)
+#         # get pixel intensities at each (Ud, Vd) coordinate
+#         ir = getPixels(img, DU, DV, s)  # Ud and Vd should be shaped to match the grid dimensions
+#         #ir is of shape (4609, 3430, 3)
+#
+#         rectified_image_memmap[n] = ir
+#
+#
+#
+#         if plot:
+#             # Quick sanity plot
+#             plt.figure(figsize=(10, 10))
+#             if ir.shape[2] == 3:  #if the image is three channels
+#                 plt.imshow(np.clip(ir.astype(np.uint8), 0, 255), extent=[x_grid.min(), x_grid.max(), y_grid.min(), y_grid.max()],
+#                    origin='lower')
+#             else:  #if not three channels plot grayscale
+#                 plt.imshow(ir[:, :, 0], cmap='gray', extent=[x_grid.min(), x_grid.max(), y_grid.min(), y_grid.max()],
+#                    origin='lower')
+#             plt.title("Rectified image")
+#             plt.xlabel("Easting (m)")
+#             plt.ylabel("Northing (m)")
+#             # plt.savefig('./drone/outputs/temp/rectified_sample.png')
+#             plt.show()
+#             plt.close('all')
+#
+#         # periodically flush disk to avoid memory buildup
+#         if n % 100 == 0:
+#             rectified_image_memmap.flush()
+#
+#     #final flush
+#     rectified_image_memmap.flush()
+
+
+def rectifyImages(images, drone_intrinsics_path, drone_extrinsics_path, save_path, plot=True):
+
+    '''INTRINSICS'''
+    drone_metadata = scipy.io.loadmat(drone_intrinsics_path)
+    calib = drone_metadata['CopterCurrents_CamCalib']
+    fc = calib['fc']
+    fcx, fcy = fc[0][0][0][0], fc[0][0][1][0]
+
+    cc = calib['cc']
+    ccx, ccy = cc[0][0][0][0], cc[0][0][1][0]
+
+    kc = calib['kc']
+    k1, k2, k3, p1, p2 = kc[0][0][0][0], kc[0][0][1][0], kc[0][0][2][0], kc[0][0][3][0], kc[0][0][4][0]
+
+    alpha_c = calib['alpha_c'][0][0][0][0]
+    nx = calib['nx'][0][0][0][0]
+    ny = calib['ny'][0][0][0][0]
+
+    intrinsics = np.array([[nx, ny, ccx, ccy, fcx, fcy, k1, k2, k3, p1, p2]])
+
+    '''EXTRINSICS'''
+    ext_metadata = np.load(drone_extrinsics_path)
+    azimuth = float(ext_metadata[4][1]) * (np.pi / 180)
+    tilt    = 0 * (np.pi / 180)
+    swing   = 0 * (np.pi / 180)
+    z = float(ext_metadata[1][1])
+    x = float(ext_metadata[3][1])
+    y = float(ext_metadata[2][1])
+
+    dx  = float(ext_metadata[-2][1])
+    gsd = dx
+
+    transformer = Transformer.from_crs("epsg:4326", "epsg:32618", always_xy=True)
+    easting, northing = transformer.transform(x, y)
+
+    extrinsics = np.array([[easting, northing, z, azimuth, tilt, swing]])
+
+    '''GRID FROM IMAGE CORNERS'''
+    img_h, img_w = images[0].shape[:2]
+    corners_uv = np.array([
+        [0,     0    ],
+        [img_w, 0    ],
+        [0,     img_h],
+        [img_w, img_h],
+    ])
+
+    corner_world = uv2XYZ(intrinsics[0], extrinsics[0], corners_uv, z_ground=0)
+
+    east_min,  north_min = corner_world.min(axis=0)
+    east_max,  north_max = corner_world.max(axis=0)
+
+    buffer = 5
+    x_grid = np.arange(east_min - buffer,  east_max + buffer,  gsd)
+    y_grid = np.arange(north_min - buffer, north_max + buffer, gsd)
+
+    xx, yy = np.meshgrid(x_grid, y_grid)
+    zz     = np.zeros_like(xx)
+    xyz_grid = np.column_stack((xx.ravel(), yy.ravel(), zz.ravel()))
+
+    '''MEMMAP — shape derived from the rectified grid'''
+    N_frames   = len(images)
+    img_h_rect = len(y_grid)   # rectified output rows
+    img_w_rect = len(x_grid)   # rectified output cols
+
+    # detect channels from first image
+    first_img  = images[0] if not isinstance(images[0], str) \
+                 else cv2.cvtColor(cv2.imread(images[0]), cv2.COLOR_BGR2RGB)
+    n_channels = first_img.shape[2] if first_img.ndim == 3 else 1
+
+    if n_channels > 1:
+        memmap_shape = (N_frames, img_h_rect, img_w_rect, n_channels)
+    else:
+        memmap_shape = (N_frames, img_h_rect, img_w_rect)
+
+    rectified_image_memmap = np.memmap(save_path, dtype='uint8', mode='w+', shape=memmap_shape)
+
+    '''RECTIFICATION LOOP'''
+    s = xx.shape
+    Ud, Vd = xyz2DistUV(intrinsics[0], extrinsics[0], xyz_grid)  # compute once, reuse every frame
+    DU = Ud.reshape(s)
+    DV = Vd.reshape(s)
+
+    for n in tqdm(range(N_frames)):
+        img = images[n] if not isinstance(images[n], str) \
+              else cv2.cvtColor(cv2.imread(images[n]), cv2.COLOR_BGR2RGB)
+
+        ir = getPixels(img, DU, DV, s)  # (img_h_rect, img_w_rect, C)
+
+        # replace NaNs with 0 before casting
+        ir_clean = np.nan_to_num(ir, nan=0.0)
+
+        if n_channels > 1:
+            rectified_image_memmap[n] = np.clip(ir_clean, 0, 255).astype(np.uint8)
+        else:
+            rectified_image_memmap[n] = np.clip(ir_clean[:, :, 0], 0, 255).astype(np.uint8)
+
+        if plot:
+            plt.figure(figsize=(10, 10))
+            if n_channels == 3:
+                plt.imshow(np.clip(ir, 0, 255).astype(np.uint8),
+                           extent=[x_grid.min(), x_grid.max(), y_grid.min(), y_grid.max()],
+                           origin='lower')
+            else:
+                plt.imshow(ir[:, :, 0], cmap='gray',
+                           extent=[x_grid.min(), x_grid.max(), y_grid.min(), y_grid.max()],
+                           origin='lower')
+            plt.title("Rectified image")
+            plt.xlabel("Easting (m)")
+            plt.ylabel("Northing (m)")
+            plt.show()
+            plt.close('all')
+
+        if n % 100 == 0:
+            rectified_image_memmap.flush()
+
+    rectified_image_memmap.flush()
+
 if __name__ == "__main__":
     # rgb images - non modified
     rgb_images = sorted(glob.glob('./drone/processed/subset20171791057/*.jpeg'), key=numerical_sort)[:282]
@@ -376,7 +642,7 @@ if __name__ == "__main__":
         plt.title("Rectified image")
         plt.xlabel("Easting (m)")
         plt.ylabel("Northing (m)")
-        plt.savefig('./drone/outputs/temp/rectified_sample.png')
+        # plt.savefig('./drone/outputs/temp/rectified_sample.png')
         plt.show()
         plt.close('all')
 

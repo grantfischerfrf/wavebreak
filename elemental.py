@@ -9,6 +9,8 @@ from tqdm import tqdm
 import os
 import pickle
 
+from image_rectification import rectifyImages
+
 
 def numerical_sort(string):
 
@@ -471,6 +473,12 @@ if __name__ == "__main__":
     x_min, x_max = 0, images[0].shape[1]
     y_min, y_max = 700, 1500
     clipped_images = clip_images(images, x_min, x_max, y_min, y_max)
+
+    #rectify images
+    drone_intrinsics_path = './drone/DJI_3840x2160.mat'
+    drone_extrinsics_path = './drone/1057metadata.npy'
+    save_path = './elemental/rectified_images_array.dat'
+    rectifyImages(clipped_images, drone_intrinsics_path, drone_extrinsics_path, save_path, plot=False)
 
     #calculate optical flow using farneback method
     output_dir = './elemental/opticalFlow/'
