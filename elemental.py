@@ -10,12 +10,7 @@ import os
 import pickle
 
 from image_rectification import rectifyImages
-
-
-def numerical_sort(string):
-
-    parts = re.split(r'(\d+)', string)
-    return [int(part) if part.isdigit() else part for part in parts]
+from utils import numerical_sort
 
 def clip_images(images, x_min, x_max, y_min, y_max):
     clipped = images[:, y_min:y_max, x_min:x_max]
@@ -147,7 +142,7 @@ def calculateVelocities(vx, vy, fps, spatial_res, spacing):
     return cx, cy
 
 
-def filter_lowSpeeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, slowspeeds=1):
+def filter_lowSpeeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, slowspeeds):
 
     #slowspeeds is filter in m/s
 
@@ -180,7 +175,7 @@ def visualize_opticalFlow(u, v, image):
     plt.show()
     plt.close('all')
 
-def whitecap_flow(cx, cy, images, contours, plot=True):
+def whitecap_flow(cx, cy, images, contours, gsd, plot=True):
 
     h, w = images[0].shape[0], images[0].shape[1]
 
@@ -248,8 +243,8 @@ def whitecap_flow(cx, cy, images, contours, plot=True):
             #     cy_val = interp_cy([[y_point, x_point]])[0]  # [0] extracts the scalar value
             #
             #     # Store the interpolated values and coordinates
-            #     CXi_list.append(cx_val)
-            #     CYi_list.append(cy_val)
+            #     CXi_list.append(cx_val)  #x velocities along whitecap
+            #     CYi_list.append(cy_val)  # y velocities along whitecap
             #     ipc_list.append(x_point)  # x coordinates (columns)
             #     jpc_list.append(y_point)  # y coordinates (rows)
 
@@ -334,12 +329,14 @@ def pull_outward_velocities(CXi_list, CYi_list, ipc_list, jpc_list, dl_list, ima
     #         plt.close('all')
 
     dc = 0.2
-    c_bins = np.arange(0, 5 + dc, dc)
+    c_bins = np.arange(0, 20 + dc, dc)
 
-    Lambda = np.zeros(len(c_bins) - 1)
+
+
+    Lambda = np.zeros(len(c_bins) - 1)  #set up empty array for the lambda distribution
 
     N_frames = len(images)
-    A_tot = images[0].shape[0] * images[0].shape[1] * (gsd ** 2) * N_frames  #Atot is the cumulative area
+    A_tot = images[0].shape[0] * images[0].shape[1] * (gsd ** 2) * N_frames  #Atot is the cumulative area over all frames
 
     #find the outward vectors for the waves
     amp = 5 #amplitude factor for quiver plot
@@ -384,10 +381,10 @@ def pull_outward_velocities(CXi_list, CYi_list, ipc_list, jpc_list, dl_list, ima
 
         dl_out = dl[outward]
 
-        for k in range(len(c_bins) - 1):
+        for k in range(len(c_bins) - 1):  #loop through speed bins
             mask = (co >= c_bins[k]) & (co < c_bins[k + 1])
 
-            # Lambda[k] += np.sum(dl_out[mask]) * 5/fps  #TODO: do I need a factor of time here?
+            # Lambda[k] += np.sum(dl_out[mask]) * 5/fps  #TODO: do I need a factor of time here - no
             Lambda[k] += np.sum(dl_out[mask])
 
         #plot outward facing vectors
@@ -414,7 +411,7 @@ def pull_outward_velocities(CXi_list, CYi_list, ipc_list, jpc_list, dl_list, ima
             plt.close('all')
 
 
-    Total_time_sec = len(images) / fps  #total time in seconds
+    # Total_time_sec = len(images) / fps  #total time in seconds
 
     # Lambda /= (A_tot * Total_time_sec * dc)  #TODO: Is total time needed in the normalization?
     Lambda /= (A_tot * dc)
@@ -451,6 +448,7 @@ def pull_outward_velocities(CXi_list, CYi_list, ipc_list, jpc_list, dl_list, ima
     ax1.set_xlabel('Wave Speed (m/s)')
     ax1.set_ylabel(r'c$^5$ * $\Lambda(c)$ * dc (m$^4$ s$^{-5}$)')
     ax1.set_title('Fifth Moment of the \u039B(c) Distribution')
+    ax1.set_ylim(1e-8, 1e0)
     ax1.grid(axis='y')
     plt.savefig('./elemental/figures/elemental_Lambda(c).png', dpi=300, bbox_inches='tight')
     plt.show()
@@ -478,7 +476,7 @@ if __name__ == "__main__":
     drone_intrinsics_path = './drone/DJI_3840x2160.mat'
     drone_extrinsics_path = './drone/1057metadata.npy'
     save_path = './elemental/rectified_images_array.dat'
-    rectifyImages(clipped_images, drone_intrinsics_path, drone_extrinsics_path, save_path, plot=False)
+    # rectifyImages(clipped_images, drone_intrinsics_path, drone_extrinsics_path, save_path, plot=False)
 
     #calculate optical flow using farneback method
     output_dir = './elemental/opticalFlow/'
@@ -511,7 +509,7 @@ if __name__ == "__main__":
     #visualize the results
     # images_downsampled = images[::spacing] #downsample to match spacing used for optical flow
 
-    # whitecap_flow(cx, cy, clipped_images, filtered_contours, plot=False)
+    # whitecap_flow(cx, cy, clipped_images, filtered_contours, gsd, plot=False)
 
     #load flow data
     flow_variables = np.load('./elemental/whitecap_flow.pkl', allow_pickle=True) #For each variable (N Frames, N contours in each frame, N points in each contour, 1, (x, y))

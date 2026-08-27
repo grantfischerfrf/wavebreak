@@ -15,12 +15,8 @@ from tqdm import tqdm
 from collections import deque
 import pickle
 
+from utils import numerical_sort
 
-
-def numerical_sort(string):
-
-    parts = re.split(r'(\d+)', string)
-    return [int(part) if part.isdigit() else part for part in parts]
 
 def loadContours(path):
     with open(path, 'rb') as f:
@@ -113,9 +109,9 @@ class WaveTrack:
         overlapping if the distance between their centers is less than the sum
         of their semi-major axes scaled by overlap_threshold.
 
-        overlap_threshold=0.0  → centroids must be within touching distance
-        overlap_threshold=-0.5 → require 50% overlap (stricter)
-        overlap_threshold=0.5  → allow up to 50% gap (looser)
+        overlap_threshold=0.0  -> centroids must be within touching distance
+        overlap_threshold=-0.5 -> require 50% overlap (stricter)
+        overlap_threshold=0.5  -> allow up to 50% gap (looser)
         """
         if not self.ellipses:
             return True  # no history yet, always accept
@@ -136,7 +132,7 @@ class WaveTrack:
         the tracked ellipse area. Prevents small noise from being stitched
         together into a plausible-looking track. Tracks area between last frame and next frame
 
-        max_area_ratio=1.25 → new ellipse can be at most 1.25x larger or smaller
+        max_area_ratio=1.25 -> new ellipse can be at most 1.25x larger or smaller
         """
         if not self.areas:
             return True
@@ -204,7 +200,7 @@ class WaveTracker:
 
     def __init__(self, fps, image_shape, gsd, max_distance=50, max_missed=5, min_track_length=5, overlap_threshold=0.5, max_area_ratio=1.25, track_overlap_fraction=1.0):
         self.tracks = {} #dictionary of active waves
-        self.fps = fps
+        self.fps = fps #frames per second
         self.gsd = gsd #ground sampling distance - pixel scale to convert to meters
         self.max_distance = max_distance #maximum distance in pixels to consider a detection as part of an existing track
         self.max_missed = max_missed #maximum number of consecutive missed detections before a track is terminated
@@ -404,7 +400,7 @@ class WaveTracker:
 
         dc = speed_bins[1] - speed_bins[0] #bin width for speed
         n_bins = len(speed_bins) - 1  # number of intervals between edges
-        Lambda = np.zeros(n_bins)
+        Lambda = np.zeros(n_bins)  #initialize empty array to fill later
 
         for i in range(n_bins):
             mask = (speeds >= speed_bins[i]) & (speeds < speed_bins[i + 1]) #select contributions that fall within the current speed bin
@@ -574,7 +570,9 @@ if __name__ == "__main__":
         tracker.update(frame_conts)
 
     # speed_bins = np.linspace(0, 1000, 68)  # pixels/second
-    speed_bins = np.linspace(0, 20, 68) # meters/second
+    dc = 0.2  #TODO: this must match with the elemental method
+    speed_bins = np.arange(0, 10 + dc, dc)
+    # speed_bins = np.linspace(0, 10, 68) # meters/second   #TODO: you need to find a common speed for breaking waves - look in observational literature
     Lambda = tracker.compute_lambda(speed_bins, full_area_meters, 1/fps, total_time_sec)
 
     # phillips 1985 dissipation
@@ -582,7 +580,7 @@ if __name__ == "__main__":
     b = 7e-5
     rho = 1025
     g = 9.81
-    dc = speed_bins[1] - speed_bins[0]
+    # dc = speed_bins[1] - speed_bins[0]
     c = 0.5 * (speed_bins[:-1] + speed_bins[1:])  # bin centers
     fifth_moment = c ** 5 * Lambda * dc
     epsilon = b * rho * (1 / g) * np.sum(fifth_moment)  # TODO:check for Nan's in here and in other parts of the script
@@ -590,7 +588,7 @@ if __name__ == "__main__":
     # this quantity is representative of the time frame that you input into the tracker. Only represents the energy dissipation rate for the frames that I put in.
 
     plotting_images = rgb_images[-6:]  # last 6 frames of the original rgb images, clipped to the area of interest
-    plot_tracked_ellipses(plotting_images, filtered_contours[-6:], gsd,  n_frames=6)
+    # plot_tracked_ellipses(plotting_images, filtered_contours[-6:], gsd,  n_frames=6)
     # TODO: some problems with tracking ellipses - small noise will often be near other small noise: then the tracker believes that it is a wave that is moving.
     # TODO: remember than the lambda distribution is integrated over all wave directions - account for this at some point.
     # TODO: Currently the accumulator is in temporal style: per frame accumulation of waves
@@ -622,7 +620,8 @@ if __name__ == "__main__":
     ax1.set_xlabel('Wave Speed (m/s)')
     ax1.set_ylabel(r'c$^5$ * $\Lambda(c)$ * dc (m$^4$ s$^{-5}$)')
     ax1.set_title('Fifth Moment of the \u039B(c) Distribution')
-    ax1.grid(axis='y')
+    ax1.set_ylim(1e-8, 1e0)
+    ax1.grid(axis='y', which='major')
     plt.savefig('./drone/outputs/temp/distribution.png', dpi=300, bbox_inches='tight')
     plt.show()
     plt.close('all')
@@ -636,7 +635,7 @@ if __name__ == "__main__":
     ax.imshow(c)
     ax.set_title('Clipped Contours Overlay')
     # plt.savefig('./drone/outputs/temp/clipped_contours.png', dpi=300, bbox_inches='tight')
-    plt.show()
+    # plt.show()
     plt.close('all')
 
 #TODO: check the result of the distribution - first check if the observed wave spectrum for the estuary follows the decay

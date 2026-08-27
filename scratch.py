@@ -8,6 +8,7 @@ from tqdm import tqdm
 from scipy.ndimage import uniform_filter1d
 import scipy
 import mat73
+import utils
 
 def numerical_sort(string):
 
@@ -40,6 +41,45 @@ def find_knee(hist, sigma=5):
 
     T = t_values[np.argmax(ratios)]
     return T, ratios
+
+
+def get_mask(frame, erode_px=15):
+
+    #mask the dark border around the rectified image so that it does not contaminate the contour detection
+    h, w = frame.shape #get the frame dimensions
+
+    # flood fill from all 4 corners to capture the connected black padding
+    padding = np.zeros((h, w), dtype=np.uint8)  #holds the flood filled padding across all seed corners
+
+    ff_img = frame.copy()  #copy the frame to flood fill on so the in place modification does not affect the original array
+    seeds = [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)] #corners of the image (row, col) format
+    for seed in seeds:
+        # skip corners that are already marked
+        if padding[seed] == 0:  #if a corner has not been already captured by a previous flood fill, skip it
+            temp_flood_mask = np.zeros((h + 2, w + 2), dtype=np.uint8)  #output mask to flood fill, must be 2px larger on height and width by documentation
+            cv2.floodFill(
+                ff_img.copy(), temp_flood_mask, seedPoint=(seed[1], seed[0]),
+                newVal=255, loDiff=5, upDiff=5,  # exact-match flood - fill only goes to exact matches of the seed (0 - black here)
+                flags=8 | cv2.FLOODFILL_MASK_ONLY | (255 << 8)  #count the diagonal neighbors - write result to the flood mask only - dont alter the original image
+            )
+            padding = cv2.bitwise_or(padding, temp_flood_mask[1:-1, 1:-1])
+            # temp_flood_mask comes back as the padded (h+2, w+2) size with fill values of 1,
+            # so [1:-1, 1:-1] crops back to the original (h, w) frame size, bitwise or allows the running total, so all 4 corners' padding
+            # regions accumulate into one combined mask
+
+    # valid footprint = everything not flood-filled padding
+    valid_mask = cv2.bitwise_not(padding)
+    # invert: padding pixels (255) become 0 (invalid), everything else becomes 255 (valid image content)
+
+    # shrink inward to exclude the blurred rectification edge zone
+    # if erode_px > 0:
+    #     erode_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (erode_px * 2 + 1, erode_px * 2 + 1))
+    #     valid_mask = cv2.erode(valid_mask, erode_kernel)
+        # build a circular structuring element sized so erosion pulls the mask boundary
+        # inward by erode_px pixels on each side
+
+    return valid_mask
+
 
 '''Camera calibration'''
 # cam = scipy.io.loadmat('./drone/DJI_3840x2160.mat')
@@ -84,16 +124,16 @@ def find_knee(hist, sigma=5):
 
 
 '''image clipping'''
-images = np.load('./drone/processed/1057subset_images.npy', mmap_mode='r')[:282]
-def clip_images(images, x_min, x_max, y_min, y_max):
-    clipped = images[:, y_min:y_max, x_min:x_max]
-    return clipped
-x_min, x_max = 0, images[0].shape[1]
-y_min, y_max = 700, 1500
-clipped_images = clip_images(images, x_min, x_max, y_min, y_max)
-plt.imshow(clipped_images[-1])
-plt.show()
-plt.close('all')
+# images = np.load('./drone/processed/1057subset_images.npy', mmap_mode='r')[:282]
+# def clip_images(images, x_min, x_max, y_min, y_max):
+#     clipped = images[:, y_min:y_max, x_min:x_max]
+#     return clipped
+# x_min, x_max = 0, images[0].shape[1]
+# y_min, y_max = 700, 1500
+# clipped_images = clip_images(images, x_min, x_max, y_min, y_max)
+# plt.imshow(clipped_images[-1])
+# plt.show()
+# plt.close('all')
 
 
 
@@ -220,6 +260,39 @@ plt.close('all')
 # # plt.savefig('./drone/outputs/temp/convexhull_ellipse.png', dpi=300, bbox_inches='tight')
 # plt.show()
 # plt.close('all')
+
+
+'''pixel intensities for thresholding'''
+
+image = cv2.imread('/mnt/d/Wave_Breaking/20171791057_raw_images/20171791057_1868.png', cv2.IMREAD_GRAYSCALE)
+# thresh_val, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+# plt.imshow(binary, cmap='gray')
+# plt.hist(image.flatten(), bins=64)
+# plt.show()
+# plt.close('all')
+
+
+rectified_chunk_dir = '/mnt/d/Wave_Breaking/rectified_images'
+chunk, meta = utils.load_chunk(rectified_chunk_dir, 0)
+
+rectified_image = chunk[0]
+
+
+#
+mask = get_mask(rectified_image)
+# plt.imshow(mask)
+# plt.show()
+#
+valid_vals = rectified_image[mask > 0]  # grab the valid pixel values inside the image - toss the rectified padding for the otsu calculation
+rect_thresh_val, rect_binary = cv2.threshold(valid_vals, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)  # apply otsu thresholding to get a threshold value
+_, rectified_binary = cv2.threshold(rectified_image, rect_thresh_val, 255, cv2.THRESH_BINARY)  # apply to full 2D image
+# print(rect_thresh_val)
+plt.imshow(rectified_binary, cmap='gray')
+# plt.hist(valid_vals, bins=64)
+plt.show()
+plt.close('all')
+
 
 
 

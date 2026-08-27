@@ -12,61 +12,7 @@ from tqdm import tqdm
 from collections import deque
 import pickle
 
-
-def numerical_sort(string):
-
-    parts = re.split(r'(\d+)', string)
-    return [int(part) if part.isdigit() else part for part in parts]
-
-
-def processVideo(file_path, save_path, decimate=False, new_fps=30):
-
-    capture = cv2.VideoCapture(file_path)
-
-    original_fps = capture.get(cv2.CAP_PROP_FPS)  # get original fps of video
-    print(f'FPS: {original_fps}')
-
-    out_name = os.path.basename(file_path).split('.')[0] #create output name for frames
-    # create output directory if it doesn't exist
-    if not os.path.exists(save_path + out_name):
-        os.makedirs(save_path + out_name)
-
-    print('Processing ...')
-
-    frame_count = 0
-
-    start_frame = 2297 #start of waves in video
-    end_frame = 2597 #end of clip
-    while capture.isOpened():
-
-        ret, frame = capture.read()
-
-        if not start_frame <= frame_count <= end_frame:
-            frame_count += 1
-            continue
-
-        if not ret:
-            print("Can't recieve frame. Exiting...")
-            break  #automatically breaks if no more frames to read
-
-        if decimate:
-            assert new_fps <= original_fps, "New fps must be less than or equal to original fps"
-
-            frame_interval = int(original_fps/new_fps)  #define frame interval to create new fps
-
-            if frame_count % frame_interval == 0:  #if the frame count is a multiple of the frame interval, save the frame
-
-                cv2.imwrite(f'{save_path}{out_name}/{out_name}' + '_' + str(frame_count) + '.jpeg', frame)  # save frame as JPEG file
-
-        else:
-            cv2.imwrite(f'{save_path}{out_name}/{out_name}' + '_' + str(frame_count) + '.jpeg', frame)  # save all frames as JPEG files
-
-        frame_count +=1
-
-    capture.release()
-    print('Done')
-
-    return original_fps
+from utils import numerical_sort
 
 
 def correctImages(images):   #FIXME: need to combine this with consolodate images
@@ -138,9 +84,9 @@ def consolidate_images(path, savepath):
 def contour(image, rgb_images, count):
 
     thresh_val, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    # print(thresh_val)
-    # plt.imshow(binary)
-    # plt.show()
+    print(thresh_val)
+    plt.imshow(binary, cmap='grey_r')
+    plt.show()
     # plt.close('all')
 
     # define kernels
@@ -216,7 +162,7 @@ def loadContours(path):
 
 
 def find_knee(hist, sigma=5):
-    # find where histogram drops off from the spike
+    # find where histogram drops off from the spike - sigma is the sliding window size that the variance is calculated over.
     threshold = 0.01 * hist.max()
     t_min = np.argmax(hist < threshold)
 
@@ -412,7 +358,7 @@ if __name__ == "__main__":
     #FIXME: finally fix the correct and consolodate images functions. Then add the clip images before to speed up processing time. Less pixels in the array to correct for
 
     #load corrected images - image processing pipeline from kleiss and melville 2011
-    images = np.load('./drone/processed/1057subset_images.npy', mmap_mode='r')[:282] #already opened images using cv2.imread - from consolidate images function FIXE: just clip images from here instead
+    images = np.load('./drone/processed/1057subset_images.npy', mmap_mode='r')[:282] #already opened images using cv2.imread - from consolidate images function FIXME: just clip images from here instead
 
     x_min, x_max = 0, images[0].shape[1]
     y_min, y_max = 700, 1500
@@ -427,7 +373,7 @@ if __name__ == "__main__":
     for frame_idx in tqdm(range(len(clipped_images))):  #input cropped images here - was originally images
         image = (clipped_images[frame_idx] * 255).astype(np.uint8) #change datatype for open CV operations
 
-        #create contours
+        #create binary mask of the image
         binary = contour(image, rgb_images[frame_idx], count)
 
         history.append(binary)
@@ -481,7 +427,7 @@ if __name__ == "__main__":
         with open(f'./drone/processed/subset20171791057_convexHulls/hulls_frame_{frame_idx}.pkl', 'wb') as f:
             pickle.dump(hulls, f)
 
-    fit_ellipse(rgb_images, N_min, smoothed_contours)  #This is not needed for the wave tracking script
+    # fit_ellipse(rgb_images, N_min, smoothed_contours)  #This is not needed for the wave tracking script
 
     #TODO: install a rectify images script to correct the images before wave detection - needed for any spatial measurements.
 
