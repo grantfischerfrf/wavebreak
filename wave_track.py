@@ -572,7 +572,7 @@ if __name__ == "__main__":
     # speed_bins = np.linspace(0, 1000, 68)  # pixels/second
     dc = 0.2  #TODO: this must match with the elemental method
     speed_bins = np.arange(0, 10 + dc, dc)
-    # speed_bins = np.linspace(0, 10, 68) # meters/second   #TODO: you need to find a common speed for breaking waves - look in observational literature
+    # speed_bins = np.linspace(0, 10, 68) # meters/second
     Lambda = tracker.compute_lambda(speed_bins, full_area_meters, 1/fps, total_time_sec)
 
     # phillips 1985 dissipation
@@ -583,7 +583,7 @@ if __name__ == "__main__":
     # dc = speed_bins[1] - speed_bins[0]
     c = 0.5 * (speed_bins[:-1] + speed_bins[1:])  # bin centers
     fifth_moment = c ** 5 * Lambda * dc
-    epsilon = b * rho * (1 / g) * np.sum(fifth_moment)  # TODO:check for Nan's in here and in other parts of the script
+    epsilon = b * rho * (1 / g) * np.sum(fifth_moment)
     print(f'Estimated Energy dissipation rate: {epsilon:.4e} W/m^2')  # watt is a joule per second. so really this is joules per second per square meter. the energy dissipated by the breaking waves per unit area of the ocean surface per unit time.
     # this quantity is representative of the time frame that you input into the tracker. Only represents the energy dissipation rate for the frames that I put in.
 

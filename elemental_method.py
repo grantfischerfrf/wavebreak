@@ -313,7 +313,7 @@ if __name__ == "__main__":
 
 
 
-
+#TODO: better filtering of contours in the preprocessing step may allow for the distribution to follow the c^-6 line
 
 
 

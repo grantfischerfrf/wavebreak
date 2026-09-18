@@ -21,7 +21,7 @@ def threshold_image(image, mask):
     # define kernels
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
     kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    cross = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+    cross = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))   #TODO: get a more robust contour fitting scheme done here.
 
     # morphological cleanup
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close, iterations=1)
@@ -36,13 +36,13 @@ def contour_area_dist(contourList, sigma=7):
     cont_areas = [cv2.contourArea(c) for conts in contourList for c in conts]
 
     # use scotts rule to determine number of bins the histogram should have
-    n = len(cont_areas)
-    cont_areas_arr = np.array(cont_areas)
-    bin_width_scott = 3.5 * np.std(cont_areas_arr) / n ** (1 / 3)
-    n_bins_scott = int(np.ceil((cont_areas_arr.max() - cont_areas_arr.min()) / bin_width_scott))
+    n = len(cont_areas) #number of data points
+    cont_areas_arr = np.array(cont_areas)  #convert list to array for std calculation
+    bin_width_scott = 3.5 * np.std(cont_areas_arr) / n ** (1 / 3) #bin width
+    n_bins_scott = int(np.ceil((cont_areas_arr.max() - cont_areas_arr.min()) / bin_width_scott)) #number of bins
 
     # calculate histogram
-    hist, bins = np.histogram(cont_areas, bins=n_bins_scott, range=(0, 256))
+    hist, bins = np.histogram(cont_areas, bins=n_bins_scott, range=(0, 256)) #histogram of contour areas
     knee, _ = utils.find_knee(hist, sigma=sigma)
     # plt.hist(hist, bins)
     # plt.xscale('log')
@@ -246,7 +246,7 @@ if __name__ == "__main__":
 
 #TODO: maybe run everything from scratch
 
-#TODO: fix the addition of the waves that
+#TODO: fix the addition of the waves that appear as contours but are not breaking
 
 
 
