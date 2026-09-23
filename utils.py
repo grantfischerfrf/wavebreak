@@ -64,6 +64,16 @@ def get_mask(frame, erode_px=15):
 
     return valid_mask
 
+
+def warp_mask(mask, dx, dy):
+    """Shift a binary mask forward by per-pixel displacement (dx, dy) in pixels."""
+    h, w = mask.shape
+    x_coords, y_coords = np.meshgrid(np.arange(w), np.arange(h))
+    map_x = (x_coords + dx).astype(np.float32)
+    map_y = (y_coords + dy).astype(np.float32)
+    return cv2.remap(mask, map_x, map_y, interpolation=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+
 def load_opticalFlow_frame(optical_flow_dir, chunk_idx, frame):
     #loads the vx, vy, shape optical flow memmap output for a given directory and chunk index and particular frame in the memmap
     vx_path = os.path.join(optical_flow_dir, f'vx_{chunk_idx:04d}.dat')  # path to optical flow x velocities

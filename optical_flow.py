@@ -37,8 +37,6 @@ def opticalFlow(images, output_dir, chunk_idx=None, spacing=1, paths=True, plot=
 
         #check if frames are floating point or 8 bit images.
         if frame1.dtype == np.float64 or frame1.dtype == np.float32:
-            # frame1 = (frame1 * 255).astype(np.uint8)
-            # frame2 = (frame2 * 255).astype(np.uint8)
             frame1 = ((frame1 - frame1.min()) / (frame1.max() - frame1.min()) * 255).astype(np.uint8)  #min max normalization as to not saturate the brightest pixels
             frame2 = ((frame2 - frame2.min()) / (frame2.max() - frame2.min()) * 255).astype(np.uint8)
         else:
@@ -76,8 +74,6 @@ def opticalFlow(images, output_dir, chunk_idx=None, spacing=1, paths=True, plot=
     # Save shape metadata - required for reloading
     np.save(os.path.join(output_dir, f'flow_shape_{chunk_idx:04d}.npy'), np.array([n_frames, H, W]))
 
-        # return vx_mm, vy_mm
-
 
 def visualize_opticalFlow(u, v, image):
     #image dimensions
@@ -111,7 +107,7 @@ if __name__ == "__main__":
 
     save_dir = '/mnt/d/Wave_Breaking/optical_flow' #directory to save the optical flow outputs
 
-    spacing = 5 #spacing between frames for optical flow - must be consistent with the buffer used in the image processing script
+    spacing = 5 #spacing between frames for optical flow - must be consistent with the buffer/overlap used in the image processing script
 
     'Compute optical flow for each chunk of rectified images'
     for i, chunk in enumerate(rectified_chunk_paths):

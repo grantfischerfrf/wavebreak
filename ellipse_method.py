@@ -163,7 +163,7 @@ class WaveTracker:
     def update(self, filtered_contours):
 
         #pass already filtered contours for the frame, returns active tracking
-        detections = self._fit_ellipses(filtered_contours, image_shape) #fit ellipses to the contours and get centroids and ellipse parameters
+        detections = self._fit_ellipses(filtered_contours, self.image_shape) #fit ellipses to the contours and get centroids and ellipse parameters
         self._match_and_update(detections)
         self._suppress_overlapping_tracks(overlap_fraction=self.track_overlap_fraction)
         self._accumulate_lambda()
@@ -488,3 +488,7 @@ if __name__ == "__main__":
     Lambda = compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir, gsd, fps)
 
     #TODO: really need to go back into the image processing and check for noise. Only the large waves with velocities over 1 m/s are actually significant here.
+
+    #TODO: convex hull from contours?
+
+    #TODO: we want to plot some sample images as well here.

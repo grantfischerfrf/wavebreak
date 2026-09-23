@@ -75,6 +75,8 @@ def get_mean_background(images):
     S = np.mean([cv2.imread(image, cv2.IMREAD_GRAYSCALE) for image in images], axis=0) / 255  # normalized mean background lighting, averaged over time dimension
     Sbar = np.mean(S, axis=(0, 1))  # average over x and y dimensions
 
+    #TODO: may want to change this so that a mean background is iteratively updated as each chunk is processed. then pass one mean background into the process chunk function for all chunks
+
     return S, Sbar
 
 
@@ -342,29 +344,6 @@ if __name__ == "__main__":
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-    #TODO: multiprocessing at some point here.
-    # detect contours
-
-    #TODO: other scripts
-    # compute optical flow
-    # interpolate onto contours
-    # accumulate Lambda C
-    # AFTER LOOP: normalize Lambda C
-
-
-
-    #TODO: anythign with numerical sort must be transitioned to the utils version.
 
 
 

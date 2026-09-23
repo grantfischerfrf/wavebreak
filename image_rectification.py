@@ -15,10 +15,7 @@ from tqdm import tqdm
 import imageio
 from scipy.interpolate import RegularGridInterpolator as reg_interp
 
-def numerical_sort(string):
-
-    parts = re.split(r'(\d+)', string)
-    return [int(part) if part.isdigit() else part for part in parts]
+from utils import numerical_sort
 
 def xyz2DistUV(intrinsics, extrinsics, xyz):
     '''
@@ -318,118 +315,6 @@ def uv2XYZ(intrinsics, extrinsics, uv_points, z_ground=0):
 
     return np.array(world_points)
 
-# def rectifyImages(images, drone_intrinsics_path, drone_extrinsics_path, save_path, plot=True):
-#
-#     #create intrinsics and extrinsics arrays for rectification
-#     #FIXME: Really sloppy code, need to change how the mat file is opened so a variable is not being indexed four times
-#     '''INTRINSICS'''
-#     drone_metadata = scipy.io.loadmat(drone_intrinsics_path)
-#     calib = drone_metadata['CopterCurrents_CamCalib']
-#     fc = calib['fc']  # focal length x and y
-#     fcx, fcy = fc[0][0][0][0], fc[0][0][1][0]
-#
-#     cc = calib['cc']  # principal point x and y
-#     ccx, ccy = cc[0][0][0][0], cc[0][0][1][0]
-#
-#     kc = calib['kc']  # distortion coefficients - k1, k2, k3, p1, p2 - radial and tangential distortion coefficients
-#     k1, k2, k3, p1, p2 = kc[0][0][0][0], kc[0][0][1][0], kc[0][0][2][0], kc[0][0][3][0], kc[0][0][4][0]
-#
-#     alpha_c = calib['alpha_c'][0][0][0][0]  # skew coefficient
-#     nx = calib['nx'][0][0][0][0]  # image width
-#     ny = calib['ny'][0][0][0][0]  # image height
-#
-#     # create 1x11 intrinsics array from the calibration parameters
-#     intrinsics = np.array([[nx, ny, ccx, ccy, fcx, fcy, k1, k2, k3, p1, p2]])
-#
-#     '''EXTRINSICS'''
-#     # create 1x6 extrinsics array x,y,z,a,t,s
-#     ext_metadata = np.load(drone_extrinsics_path)
-#     azimuth = float(ext_metadata[4][1]) * (np.pi / 180)  # drone heading - equivalent to azimuth - convert to radians
-#     tilt = 0 * (np.pi / 180)  # drone tile, nadir view, fixed value - assumed so in Alex's paper
-#     swing = 0 * (np.pi / 180)  # drone swing, fixed value - assumed so in Alex's paper
-#     z = float(ext_metadata[1][
-#                   1])  # altitude in meters - This is assumed absolute altitude above the ground as recorded by the DJI drone in the flight logs. Should be relative to MSL.
-#     x = float(ext_metadata[3][1])  # longitude in decimal degrees
-#     y = float(ext_metadata[2][1])  # latitude in decimal degrees
-#
-#     # pull ground sampling distance for grid
-#     dx = float(ext_metadata[-2][1])  # dx and dy are the same value
-#     gsd = dx
-#
-#     # convert x, y, z from wgs84 to UTM 18N for connecticut river - long island sound
-#     transformer = Transformer.from_crs("epsg:4326", "epsg:32618", always_xy=True)
-#     easting, northing = transformer.transform(x, y)
-#
-#     # create 1x6 extrinsics array from the extrinsic parameters
-#     extrinsics = np.array([[easting, northing, z, azimuth, tilt, swing]])
-#
-#     fov_x = 2 * np.arctan(intrinsics[0][1] / (2 * intrinsics[0][5]))  # horizontal FOV
-#     fov_y = 2 * np.arctan(intrinsics[0][0] / (2 * intrinsics[0][4]))  # vertical FOV
-#
-#     half_width = z * np.tan(fov_x / 2)
-#     half_height = z * np.tan(fov_y / 2)
-#
-#     margin = 1.6
-#     x_grid = np.arange(easting - half_width * margin, easting + half_width * margin,  #TODO: fix this
-#                        gsd)  # resolution must be equivalent to the ground sampline distance
-#     y_grid = np.arange(northing - half_height * 1.2, northing + half_height * 1.2, gsd)
-#
-#
-#     xx, yy = np.meshgrid(x_grid, y_grid)
-#     zz = np.zeros_like(xx)  # flat ground at z=0 MSL
-#
-#     xyz_grid = np.column_stack((xx.ravel(), yy.ravel(), zz.ravel()))  # shape (N, 3) where N is number of grid points
-#
-#     #set up memmap to save rectified arrays
-#     N_frames = len(images)
-#     H, W = images[0].shape
-#     memmap_shape = (N_frames, H, W)
-#     rectified_image_memmap = np.memmap(save_path, dtype='uint8', mode='w+', shape=memmap_shape) #can also save as float32 for more precise data
-#
-#     for n in tqdm(range(len(images))):
-#         if type(images[n]) == 'str':
-#             img = cv2.cvtColor(cv2.imread(images[n]), cv2.COLOR_BGR2RGB)
-#
-#         else:
-#             img = images[n]
-#
-#         # img_w = img.shape[1]
-#         # img_h = img.shape[0]
-#         Ud, Vd = xyz2DistUV(intrinsics[0], extrinsics[0], xyz_grid)
-#
-#         s = xx.shape
-#         DU = Ud.reshape(s)
-#         DV = Vd.reshape(s)
-#         # get pixel intensities at each (Ud, Vd) coordinate
-#         ir = getPixels(img, DU, DV, s)  # Ud and Vd should be shaped to match the grid dimensions
-#         #ir is of shape (4609, 3430, 3)
-#
-#         rectified_image_memmap[n] = ir
-#
-#
-#
-#         if plot:
-#             # Quick sanity plot
-#             plt.figure(figsize=(10, 10))
-#             if ir.shape[2] == 3:  #if the image is three channels
-#                 plt.imshow(np.clip(ir.astype(np.uint8), 0, 255), extent=[x_grid.min(), x_grid.max(), y_grid.min(), y_grid.max()],
-#                    origin='lower')
-#             else:  #if not three channels plot grayscale
-#                 plt.imshow(ir[:, :, 0], cmap='gray', extent=[x_grid.min(), x_grid.max(), y_grid.min(), y_grid.max()],
-#                    origin='lower')
-#             plt.title("Rectified image")
-#             plt.xlabel("Easting (m)")
-#             plt.ylabel("Northing (m)")
-#             # plt.savefig('./drone/outputs/temp/rectified_sample.png')
-#             plt.show()
-#             plt.close('all')
-#
-#         # periodically flush disk to avoid memory buildup
-#         if n % 100 == 0:
-#             rectified_image_memmap.flush()
-#
-#     #final flush
-#     rectified_image_memmap.flush()
 
 
 def rectifyImages(images, drone_intrinsics_path, drone_extrinsics_path, save_path, plot=True):

@@ -9,6 +9,8 @@ from scipy.ndimage import uniform_filter1d
 import scipy
 import mat73
 import utils
+from scipy.spatial.distance import cdist
+
 
 def numerical_sort(string):
 
@@ -264,7 +266,7 @@ def get_mask(frame, erode_px=15):
 
 '''pixel intensities for thresholding'''
 
-image = cv2.imread('/mnt/d/Wave_Breaking/20171791057_raw_images/20171791057_1868.png', cv2.IMREAD_GRAYSCALE)
+# image = cv2.imread('/mnt/d/Wave_Breaking/20171791057_raw_images/20171791057_1868.png', cv2.IMREAD_GRAYSCALE)
 # thresh_val, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
 # plt.imshow(binary, cmap='gray')
@@ -273,25 +275,149 @@ image = cv2.imread('/mnt/d/Wave_Breaking/20171791057_raw_images/20171791057_1868
 # plt.close('all')
 
 
-rectified_chunk_dir = '/mnt/d/Wave_Breaking/rectified_images'
-chunk, meta = utils.load_chunk(rectified_chunk_dir, 0)
-
-rectified_image = chunk[0]
-
-
+# rectified_chunk_dir = '/mnt/d/Wave_Breaking/rectified_images'
+# chunk, meta = utils.load_chunk(rectified_chunk_dir, 0)
 #
-mask = get_mask(rectified_image)
-# plt.imshow(mask)
+# rectified_image = chunk[0]
+#
+#
+# #
+# mask = get_mask(rectified_image)
+# # plt.imshow(mask)
+# # plt.show()
+# #
+# valid_vals = rectified_image[mask > 0]  # grab the valid pixel values inside the image - toss the rectified padding for the otsu calculation
+# rect_thresh_val, rect_binary = cv2.threshold(valid_vals, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)  # apply otsu thresholding to get a threshold value
+# _, rectified_binary = cv2.threshold(rectified_image, rect_thresh_val, 255, cv2.THRESH_BINARY)  # apply to full 2D image
+# # print(rect_thresh_val)
+# plt.imshow(rectified_binary, cmap='gray')
+# # plt.hist(valid_vals, bins=64)
 # plt.show()
+# plt.close('all')
+
+
+'''Peach et al thresholding technique'''
+
+# # # load corrected images - image processing pipeline from kleiss and melville 2011
+# images = np.load('./drone/processed/1057subset_images.npy', mmap_mode='r')[:282]  # already opened images using cv2.imread - from consolidate images function
+# sample = images[0, :, :]
+# #
+# # plt.figure(figsize=(10, 10))
+# # counts, bin_edges, _ = plt.hist(sample.ravel(), bins=64, density=True, alpha=0.3)
+# # bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+# # plt.plot(bin_centers, counts, color='black', alpha=1.0)
+# #
+# # plt.show()
+# # plt.close('all')
 #
-valid_vals = rectified_image[mask > 0]  # grab the valid pixel values inside the image - toss the rectified padding for the otsu calculation
-rect_thresh_val, rect_binary = cv2.threshold(valid_vals, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)  # apply otsu thresholding to get a threshold value
-_, rectified_binary = cv2.threshold(rectified_image, rect_thresh_val, 255, cv2.THRESH_BINARY)  # apply to full 2D image
-# print(rect_thresh_val)
-plt.imshow(rectified_binary, cmap='gray')
-# plt.hist(valid_vals, bins=64)
-plt.show()
-plt.close('all')
+#
+# def threshold_image(img, msmooth, bt_os=0):
+#     """
+#     Calculates a brightness threshold for an image based on the pixel
+#     intensity histogram, based on the ATS method (Peach, ICL 2021).
+#
+#     Parameters
+#     ----------
+#     img : ndarray
+#         Image to be thresholded, double precision, background removed.
+#     msmooth : int
+#         Window size for moving mean smoothing.
+#     bt_os : float, optional
+#         Manual offset added to threshold.
+#
+#     Returns
+#     -------
+#     BT : float
+#         Brightness threshold value for the image.
+#     """
+#
+#     # Remove nans and clip to [0, 1]
+#     imgh = img[~np.isnan(img)]
+#     imgh = np.clip(imgh, 0, 1)
+#
+#     # Get histogram (equivalent of imhist) - 256 bins over [0, 1]
+#     counts, bin_edges = np.histogram(imgh, bins=256, range=(0, 1))
+#     X = (bin_edges[:-1] + bin_edges[1:]) / 2  # bin centers, like imhist's X
+#
+#     # Cumulative sum -> CDF
+#     H = np.cumsum(counts).astype(float)
+#
+#     def movmean(x, k):
+#         """Equivalent to MATLAB's movmean with window k (centered)."""
+#         x = np.asarray(x, dtype=float)
+#         kernel = np.ones(k) / k
+#         # 'same' mode centers the window, matching movmean's default behavior
+#         return np.convolve(x, kernel, mode='same')
+#
+#     H = movmean(H / H.max(), msmooth)          # normalized, smoothed CDF
+#     DH = movmean(np.gradient(H), msmooth)      # first derivative of H
+#     DH = DH / DH.max()                          # normalize by max value
+#
+#     # --- Fit line between peak of pdf (max derivative) and end of range ---
+#     DH_max = np.argmax(DH)
+#     yD1 = DH[DH_max]
+#     xD1 = X[DH_max]
+#     xD2 = X[-1]
+#     yD2 = 0
+#     mD = (yD2 - yD1) / (xD2 - xD1)
+#     mDn = -1 / mD  # normal slope
+#
+#     xD_line = X[DH_max:]
+#     yD_line = yD2 + mD * (xD_line - X[-1])
+#
+#     # --- Perpendicular distance check ---
+#     P_D = np.column_stack((X[DH_max:], DH[DH_max:]))
+#
+#     Ddist = np.zeros(len(xD_line))
+#
+#     for k in range(len(xD_line)):
+#         xD_pt = xD_line[k]
+#         xxD = X[DH_max:DH_max + k + 1]
+#         yD_pt = yD_line[k]
+#         yyD = yD_pt + mDn * (xxD - xD_pt)
+#         pts = np.column_stack((xxD, yyD))
+#
+#         dist_matrix = cdist(pts, P_D)
+#         min_dist = dist_matrix.min(axis=0)
+#         mD_ind = np.argmin(min_dist)
+#
+#         xxD_trim = xxD[mD_ind:]
+#         yyD_trim = yyD[mD_ind:]
+#
+#         if len(xxD_trim) < 2:
+#             Ddist[k] = 0
+#         else:
+#             p1 = np.array([xxD_trim[0], yyD_trim[0]])
+#             p2 = np.array([xxD_trim[-1], yyD_trim[-1]])
+#             Ddist[k] = np.linalg.norm(p1 - p2)
+#
+#     TD_ind = np.argmax(Ddist)
+#
+#     # --- Set maximum distance point as threshold ---
+#     xD_pt = xD_line[TD_ind]
+#     xxD = X[DH_max:DH_max + TD_ind + 1]
+#     yD_pt = yD_line[TD_ind]
+#     yyD = yD_pt + mDn * (xxD - xD_pt)
+#     pts = np.column_stack((xxD, yyD))
+#
+#     dist_matrix = cdist(pts, P_D)
+#     min_dist = dist_matrix.min(axis=0)
+#     mD_ind = np.argmin(min_dist)
+#
+#     BT = xxD[mD_ind] + bt_os
+#
+#     return BT
+#
+#
+# thresh = threshold_image(sample, msmooth=4)
+#
+# thresh_val, binary = cv2.threshold(sample, thresh, 255, cv2.THRESH_BINARY)
+# plt.imshow(binary)
+# plt.show()
+# plt.close('all')
+#
+
+
 
 
 

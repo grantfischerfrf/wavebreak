@@ -50,6 +50,10 @@ def whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir,
         #pull images for the corresponding frame
         images, meta = utils.load_chunk(rectified_images_dir, n)
 
+        # get mask for buffer zone around the rectified image
+        valid_mask = utils.get_mask(images[0])
+        valid_image = np.where(valid_mask > 0, True, False)
+
         h, w = images[0].shape[0], images[0].shape[1]  #height and width of the image
         J, I = np.meshgrid(np.arange(w), np.arange(h)) #meshgrid to interpolate the contours onto
 
@@ -65,7 +69,10 @@ def whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir,
 
             # load optical flow output -> this is often too large of an array to load into RAM - easier to load incrementally
             vx, vy, shape = utils.load_opticalFlow_frame(optical_flow_dir, chunk_idx=n, frame=f) # optical flow x and y component velocites for each rectified frame -> shape (h, w)
-            cx, cy = calculateVelocities(vx, vy, fps, gsd, spacing) # metric velocities of optical flow -> shape (h, w) of rectified image
+            # remove background current (e.g. estuarine front) before converting to physical speeds
+            vx_detrend = vx - np.median(vx[valid_image]) #TODO: fine for a first pass, may need a spatially varying detrend later if only certain patches are being removed
+            vy_detrend = vy - np.median(vy[valid_image])
+            cx, cy = calculateVelocities(vx_detrend, vy_detrend, fps, gsd, spacing) # metric velocities of optical flow -> shape (h, w) of rectified image
 
             # Initialize empty lists to store interpolated values
             CXi_list = []
@@ -97,11 +104,15 @@ def whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir,
                 jpc_list.append(y_contour)
                 dl_list.append(dl)
 
+            if not ipc_list: #protect against frames with no wave breaking - no contours in the list
+                continue
+
             ipc_plot = np.concatenate(ipc_list)
             jpc_plot = np.concatenate(jpc_list)
             CXi_plot = np.concatenate(CXi_list)
             CYi_plot = np.concatenate(CYi_list)
             dl_plot = np.concatenate(dl_list)
+
 
             if plot:
                 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 4), sharex=True, sharey=True)
@@ -160,6 +171,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
 
         #pull the rectified imagery for the matching chunk
         images, meta = utils.load_chunk(rectified_images_dir, n)
+        extent = (meta['x_grid_min'], meta['x_grid_max'], meta['y_grid_min'], meta['y_grid_max']) #extents of the rectified image in meters world coordinates
 
         #get mask for buffer zone around the rectified image
         valid_mask = utils.get_mask(images[0])
@@ -171,12 +183,12 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
         total_area += A_tot_chunk #append the area from the chunk to the total area over all chunks
 
         amp = 5  # amplitude factor for quiver plot
-        for f in range(n_frames):  # loop through frames
+        for f in range(len(CXi_list)):  # loop through frames - not using n_frames variable because not all frames have valid contours left on them
 
             ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw = ipc_list[f], jpc_list[f], CXi_list[f], CYi_list[f], dl_list[f]  # Unpack contour coordinate locations and velocity values for a frame "n"
 
             # filter out slow velocities
-            ipc, jpc, CXi, CYi, dl = filter_lowSpeeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, slowspeeds=0.0)  ##TODO: find a good cutoff for this - 0.6 is ok for now
+            ipc, jpc, CXi, CYi, dl = filter_lowSpeeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, slowspeeds=0.0)  ##TODO: find a good cutoff for this (maybe in literature) - 0.6 is ok for now
 
             dXipc = list()  # create empty lists for data
             dYjpc = list()
@@ -221,11 +233,11 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
             if plot and f % plot_every ==0:
                 ipo = ipc[outward]
                 jpo = jpc[outward]
-
-                plt.figure(figsize=(10, 5))
-                plt.imshow(images[f], cmap='gray')
+                fig, axes = plt.subplots(1, 1, figsize=(10, 5))
+                axes.imshow(images[f], cmap='gray')  #extents cannot be used here until the quiver arrows are converted to world coordinates.
+                axes.invert_yaxis()
                 for x, y, cx, cy in zip(ipo, jpo, CXo, CYo):
-                    plt.arrow(
+                    axes.arrow(
                         x, y,
                         cx * amp,
                         cy * amp,
@@ -237,7 +249,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
                     )
 
                 plt.savefig(os.path.join(lambda_save_dir, f'quiver_chunk{n}_frame{f}.png'), bbox_inches='tight')
-                # plt.show()
+                plt.show()
                 plt.close('all')
 
     Lambda /= (total_area * dc)
@@ -276,7 +288,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
     ax1.set_title('Fifth Moment of the \u039B(c) Distribution')
     ax1.set_ylim(1e-8, 1e0)
     ax1.grid(axis='y')
-    plt.savefig(os.path.join(lambda_save_dir, 'elemental_Lambda(c).png'), dpi=300, bbox_inches='tight')
+    # plt.savefig(os.path.join(lambda_save_dir, 'elemental_Lambda(c).png'), dpi=300, bbox_inches='tight')
     plt.show()
     plt.close('all')
 
@@ -306,10 +318,10 @@ if __name__ == "__main__":
     gsd = dx  # ground sampling distance
 
     whitecap_save_dir = '/mnt/d/Wave_Breaking/20171791057_whitecap_flow'
-    # whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir, whitecap_save_dir, fps, gsd, 5, plot=False)
+    whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir, whitecap_save_dir, fps, gsd, 5, plot=False)
 
     lambda_save_dir = '/mnt/d/Wave_Breaking/figs/quiver'
-    compute_Lambda(whitecap_save_dir, rectified_images_dir, lambda_save_dir, gsd, speed_bins=0.2, plot=False, plot_every=100)
+    compute_Lambda(whitecap_save_dir, rectified_images_dir, lambda_save_dir, gsd, speed_bins=0.2, plot=True, plot_every=100)
 
 
 

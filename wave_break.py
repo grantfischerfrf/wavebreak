@@ -83,69 +83,98 @@ def consolidate_images(path, savepath):
 
 def contour(image, rgb_images, count):
 
-    thresh_val, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    print(thresh_val)
-    plt.imshow(binary, cmap='grey_r')
-    plt.show()
+    thresh_val, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU) #finds the optimal separation threshold for the image based on the image histogram.
+    # plt.imshow(binary, cmap='grey')
+    # plt.show()
     # plt.close('all')
 
     # define kernels
     kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    ellipse = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     cross = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
 
     # morphological cleanup
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close, iterations=1)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, cross, iterations=2) #originally ellipse kernel here
-    #FIXME: this is still giving false positives on brightly illuminated waves - YOU NEED TO CHECK IF FUTURE PROCESSING TOSSES THESE
+    # binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close, iterations=1)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, ellipse, iterations=1) #erosion followed by dilation. Closes small holes outside the area of interest.
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, ellipse, iterations=1) #dilation followed by erosion. Closes small holes inside the area of interest.
 
     #PLOTTING
-    # fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    #
-    # axes[0].imshow(cv2.imread(rgb_images))
-    # axes[0].set_title('Original')
-    #
-    # axes[1].imshow(binary, cmap='gray')
-    # axes[1].set_title(f'modified binary')
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
 
-    # plt.tight_layout()
+    axes[0].imshow(cv2.imread(rgb_images))
+    axes[0].set_title('Original')
+
+    axes[1].imshow(binary, cmap='gray')
+    axes[1].set_title(f'modified binary')
+
+    plt.tight_layout()
+    plt.show()
+    plt.close('all')
+    #
+    # gradient filtering - waves have large gradients on the edges
+    image_blur = cv2.GaussianBlur(image, (3, 3), 0)
+    grad_x = cv2.Sobel(image_blur, cv2.CV_32F, 2, 0, ksize=9)
+    grad_y = cv2.Sobel(image_blur, cv2.CV_32F, 0, 2, ksize=9)
+    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
+
+    grad_scale = np.percentile(grad_mag, 99)
+
+    # normalize for stability
+    grad_mag = grad_mag / (np.max(grad_scale) + 1e-8)
+    #
+    # plt.imshow(grad_mag)
     # plt.show()
-    # plt.close('all')
 
-    # # gradient filtering - waves have large gradients on the edges
-    # grad_x = cv2.Sobel(image, cv2.CV_32F, 1, 0, ksize=3)
-    # grad_y = cv2.Sobel(image, cv2.CV_32F, 0, 1, ksize=3)
-    # grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
-    #
-    # # normalize for stability
-    # grad_mag = grad_mag / (np.max(grad_mag) + 1e-8)
-    #
-    # # combine with Otsu
+    # combine with Otsu
     # binary = np.where(grad_mag > 0.15, binary, 0).astype(np.uint8)
-    #
-    # binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_close, iterations=2) #clean up small holes
+    grad_norm = cv2.normalize(grad_mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
 
-    # fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    #
-    # axes[0].imshow(cv2.imread(rgb_images))
-    # axes[0].set_title('Original')
-    #
-    # axes[1].imshow(binary, cmap='gray')
-    # axes[1].set_title(f'modified binary')
-    #
-    # plt.tight_layout()
-    # plt.show()
-    # plt.close('all')
+    _, grad_bin_tri = cv2.threshold(grad_norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_TRIANGLE)
 
-    # conts, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # --- blob-level gradient filtering ---
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
 
-    # #print plot of contours
-    # # plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-    # c = cv2.drawContours(image, conts, -1, color=(255, 0, 0), thickness=1)  # draw contours
-    # plt.imshow(c, alpha=0.5)
-    # # plt.savefig(f'./drone/outputs/all_contours_image_sample.png', dpi=300)
-    # plt.show()
-    # plt.close('all')
+    grad_bin_bool = grad_bin_tri > 0
+    keep = np.zeros_like(binary)
+
+    for label_id in range(1, num_labels):  # skip background label 0
+        blob_mask = labels == label_id
+        edge_pixels_in_blob = np.count_nonzero(grad_bin_bool & blob_mask)
+        blob_area = stats[label_id, cv2.CC_STAT_AREA]
+
+        if edge_pixels_in_blob / blob_area > 0.50:  # tune this
+            keep[blob_mask] = 255
+
+    binary = keep
+    # --- end replacement ---
+
+    # binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, cross, iterations=2)
+
+    # binary = cv2.bitwise_and(binary, grad_bin_tri)
+    #
+    # binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, cross, iterations=2) #clean up small holes
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    axes[0].imshow(cv2.imread(rgb_images))
+    axes[0].set_title('Original')
+
+    axes[1].imshow(binary, cmap='gray')
+    axes[1].set_title(f'modified binary')
+
+    plt.tight_layout()
+    plt.show()
+    plt.close('all')
+
+    conts, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    #print plot of contours
+    # plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+    c = cv2.drawContours(image, conts, -1, color=(255, 0, 0), thickness=1)  # draw contours
+    plt.imshow(c, alpha=0.5)
+    # plt.savefig(f'./drone/outputs/all_contours_image_sample.png', dpi=300)
+    plt.show()
+    plt.close('all')
 
     # save the contours
     # with open(f'./drone/processed/subset20171791057_contours/1057contours_image_{count}.pkl', 'wb') as f:  #TODO: make the save path a function argument
@@ -353,12 +382,12 @@ def fit_ellipse(rgb_images, N_min, contours):
 if __name__ == "__main__":
 
     #rgb images - non modified
-    rgb_images = sorted(glob.glob('./drone/processed/subset20171791057/*.jpeg'), key=numerical_sort)[:282]
+    rgb_images = sorted(glob.glob('./drone/processed/subset20171791057/*.jpeg'), key=numerical_sort)[0:282]
 
     #FIXME: finally fix the correct and consolodate images functions. Then add the clip images before to speed up processing time. Less pixels in the array to correct for
 
     #load corrected images - image processing pipeline from kleiss and melville 2011
-    images = np.load('./drone/processed/1057subset_images.npy', mmap_mode='r')[:282] #already opened images using cv2.imread - from consolidate images function FIXME: just clip images from here instead
+    images = np.load('./drone/processed/1057subset_images.npy', mmap_mode='r')[0:282] #already opened images using cv2.imread - from consolidate images function
 
     x_min, x_max = 0, images[0].shape[1]
     y_min, y_max = 700, 1500
