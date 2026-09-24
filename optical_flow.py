@@ -6,8 +6,7 @@ from tqdm import tqdm
 import utils
 import matplotlib.pyplot as plt
 
-def opticalFlow(images, output_dir, chunk_idx=None, spacing=1, paths=True, plot=False):
-    os.makedirs(output_dir, exist_ok=True)
+def opticalFlow(images, output_dir, chunk_idx=None, spacing=1, paths=True, plot=False, plot_every=100, plot_dir=None):
 
     # Get image dimensions from first frame
     if paths:
@@ -59,8 +58,8 @@ def opticalFlow(images, output_dir, chunk_idx=None, spacing=1, paths=True, plot=
         vx_mm[n] = flow[..., 0]
         vy_mm[n] = flow[..., 1]
 
-        if plot:
-            visualize_opticalFlow(flow[..., 0], flow[..., 1], frame1)
+        if plot and n % plot_every == 0:
+            visualize_opticalFlow(flow[..., 0], flow[..., 1], frame1, n, chunk_idx, plot_dir)
 
         # Flush to disk periodically to avoid memory buildup
         if n % 100 == 0:
@@ -75,12 +74,12 @@ def opticalFlow(images, output_dir, chunk_idx=None, spacing=1, paths=True, plot=
     np.save(os.path.join(output_dir, f'flow_shape_{chunk_idx:04d}.npy'), np.array([n_frames, H, W]))
 
 
-def visualize_opticalFlow(u, v, image):
+def visualize_opticalFlow(u, v, image, frame_idx, chunk_idx, plot_dir):
     #image dimensions
     h, w = image.shape[0], image.shape[1]
 
     #visualize optical flow results
-    step = 10  # downsample for clarity
+    step = 25  # downsample for clarity
 
     y, x = np.mgrid[0:h:step, 0:w:step]
     u_s = u[::step, ::step]
@@ -89,12 +88,12 @@ def visualize_opticalFlow(u, v, image):
     fig = plt.figure(figsize=(10, 6))
     ax = fig.add_subplot(111)
     ax.imshow(image, cmap='gray')
-    ax.quiver(x, y, u_s, v_s, color='r', angles='xy', scale_units='xy', scale=1)
+    ax.quiver(x, y, u_s, v_s, color='red', angles='xy', scale_units='xy', scale=2)
 
     ax.set_title('Optical Flow (Farneback)')
-    ax.axis('off')
-    # plt.savefig()
-    plt.show()
+    ax.invert_yaxis()
+    plt.savefig(os.path.join(plot_dir, f'opticalFlow_chunk_{chunk_idx}_frame_{frame_idx}.png'))
+    # plt.show()
     plt.close('all')
 
 
@@ -106,6 +105,9 @@ if __name__ == "__main__":
     rectified_chunk_paths = sorted(glob.glob(os.path.join(rectified_data_dir, '*.dat')), key=utils.numerical_sort)
 
     save_dir = '/mnt/d/Wave_Breaking/optical_flow' #directory to save the optical flow outputs
+    os.makedirs(save_dir, exist_ok=True) #ensure saving directory exists
+
+    output_plot_dir = '/mnt/d/Wave_Breaking/figs/optical_flow'
 
     spacing = 5 #spacing between frames for optical flow - must be consistent with the buffer/overlap used in the image processing script
 
@@ -115,4 +117,8 @@ if __name__ == "__main__":
         print(f'Loading Chunk {i:04d}')
         images, meta = utils.load_chunk(rectified_data_dir, i) #load in each chunk of rectified imagery (N_frames, h, w)
 
-        opticalFlow(images, save_dir, chunk_idx=i, spacing=spacing, paths=False, plot=False)
+        spacing = meta['overlap']  # buffer frames == flow spacing, by construction
+        assert len(images) - spacing == meta['core_frame_count'], \
+            f"chunk {i}: {len(images)} frames - {spacing} != core_frame_count {meta['core_frame_count']}"
+
+        opticalFlow(images, save_dir, chunk_idx=i, spacing=spacing, paths=False, plot=True, plot_every=25, plot_dir=output_plot_dir)

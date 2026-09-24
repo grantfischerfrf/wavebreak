@@ -218,8 +218,8 @@ def rectify_chunk(norm_images, DU, DV, x_grid, y_grid, save_path, plot=False):
 
 
 def save_chunk_metadata(save_dir, chunk_index, memmap_shape, dtype,
-                         global_frame_start, global_frame_end,
-                         x_grid, y_grid, gsd, chunk_size, overlap):
+                         frame_numbers, core_frame_count,
+                        x_grid, y_grid, gsd, overlap):
     """
     Save everything needed to reload and correctly interpret a chunk's memmap.
     """
@@ -227,9 +227,10 @@ def save_chunk_metadata(save_dir, chunk_index, memmap_shape, dtype,
         'chunk_index': chunk_index,    #index of a particular chunk
         'memmap_shape': list(memmap_shape),     # shape of the memmap - needed to reload it
         'dtype': str(dtype),                     # 'uint8'  - datatype
-        'global_frame_start': global_frame_start, # first global frame index in this chunk
-        'global_frame_end': global_frame_end,     # last global frame index (exclusive)
-        'core_frame_count': global_frame_end - global_frame_start - overlap,     # how many are "non-overlap" output frames
+        'frame_numbers': [int(n) for n in frame_numbers], # original video frame numbers, core + buffer
+        'global_frame_start': int(frame_numbers[0]), #video frame number start
+        'global_frame_end': int(frame_numbers[-1]) + 1,     # video frame number end (exclusive)
+        'core_frame_count': int(core_frame_count),     # how many are "non-overlap" output frames
         'overlap': overlap,  #number of frames included for overlap to deal with optical flow.
         'x_grid_min': float(x_grid.min()),  #bounds of the grid that the rectified images sit on
         'x_grid_max': float(x_grid.max()),
@@ -245,11 +246,47 @@ def save_chunk_metadata(save_dir, chunk_index, memmap_shape, dtype,
     return meta_path
 
 
-def process_chunk(image_paths, save_dir, DU, DV, x_grid, y_grid,
+def frame_number(path):
+    """Video frame number from a filename like '20171791057_1234.png' (last integer in the name)."""
+    return int(re.findall(r'\d+', os.path.basename(path))[-1])
+
+
+def build_chunks(frame_paths, chunk_size=500, overlap=5):
+    """
+    Split a sorted list of frame paths into chunks that never span a gap in
+    frame numbers. Each chunk = up to `chunk_size` core frames + `overlap`
+    buffer frames taken from the same contiguous segment.
+    Returns a list of dicts with index bounds into frame_paths.
+    """
+    nums = np.array([frame_number(p) for p in frame_paths])
+    breaks = np.where(np.diff(nums) != 1)[0] + 1        # index where a new segment starts
+    seg_starts = np.concatenate([[0], breaks])
+    seg_ends = np.concatenate([breaks, [len(nums)]])    # exclusive
+
+    chunks = []
+    for s, e in zip(seg_starts, seg_ends):
+        core_end = e - overlap                          # last `overlap` frames are buffer only
+        if core_end <= s:
+            print(f'Skipping segment of {e - s} frames ({nums[s]}-{nums[e - 1]}): shorter than overlap ({overlap})')
+            continue
+        for c0 in range(s, core_end, chunk_size):
+            c1 = min(c0 + chunk_size, core_end)
+            chunks.append({'start': c0, 'core_end': c1, 'end': c1 + overlap})
+
+    print(f'{len(seg_starts)} contiguous segments -> {len(chunks)} chunks')
+    for i, ch in enumerate(chunks):
+        print(f"  chunk {i}: frames {nums[ch['start']]}-{nums[ch['end'] - 1]} "
+              f"({ch['core_end'] - ch['start']} core + {overlap} buffer)")
+    return chunks
+
+
+def process_chunk(image_paths, save_dir, DU, DV, x_grid, y_grid, gsd, overlap,
                    chunk_index, x_min=None, x_max=None, y_min=700, y_max=1500, plot=False):
     """
     One chunk: background-normalize -> clip -> rectify -> save memmap.
     """
+    frame_numbers = [frame_number(p) for p in image_paths]
+
     print(f'[chunk {chunk_index}] Getting mean background lighting for {len(image_paths)} frames ... This may take a while')
     S, Sbar = get_mean_background(image_paths)  #get the mean background lighting
 
@@ -277,16 +314,15 @@ def process_chunk(image_paths, save_dir, DU, DV, x_grid, y_grid,
 
     rectify_chunk(norm_images, DU, DV, x_grid, y_grid, chunk_memmap_path, plot=plot)  #rectify each image in the chunk
 
-    save_chunk_metadata(  #save the metadata for each chunk to reload it later
+    save_chunk_metadata(  #save the metadata for the chunk to reload later
         save_dir, chunk_index,
         memmap_shape=(len(norm_images), DU.shape[0], DU.shape[1]),
         dtype='uint8',
-        global_frame_start=chunk_start,
-        global_frame_end=chunk_end,
+        frame_numbers=frame_numbers,
+        core_frame_count=len(norm_images) - overlap,
+        overlap=overlap,
         x_grid=x_grid, y_grid=y_grid, gsd=gsd,
-        chunk_size=chunk_size, overlap=overlap,
     )
-
     return chunk_memmap_path
 
 
@@ -329,17 +365,17 @@ if __name__ == "__main__":
     chunk_size = 500  #number of frames to put in each chunk - The amount of RAM in the computer determines how large these chunks are able to be. More RAM can do larger chunks
     overlap = 5 #overlap between chunks to help keep optical flow simple
 
-    chunk_memmap_paths = []  #empty list to hold all processed chunks
-    for i, chunk_start in enumerate(range(0, N_frames, chunk_size)):  #loop through all frames in the chunk
-        chunk_end = min(chunk_start + chunk_size + overlap, N_frames)  #get the ending index of the chunk
-        chunk_paths = all_frames[chunk_start:chunk_end]  #clip the chunk paths using the starting and ending index
+    chunks = build_chunks(all_frames, chunk_size, overlap)
+
+    for i, ch in enumerate(chunks):  #loop through all frames in the chunk
+        chunk_paths = all_frames[ch['start']:ch['end']]
 
         #process the images and save in a memmap
         memmap_path = process_chunk(
-            chunk_paths, save_dir, DU, DV, x_grid, y_grid,
+            chunk_paths, save_dir, DU, DV, x_grid, y_grid, gsd, overlap,
             chunk_index=i, x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max, plot=False
         )
-        chunk_memmap_paths.append(memmap_path) #append paths to the list
+
 
 
 

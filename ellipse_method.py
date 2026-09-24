@@ -4,389 +4,146 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 import glob
 import os
-from scipy.optimize import linear_sum_assignment
+from scipy.optimize import linear_sum_assignment  #shows up as an error sometimes but shouldn't raise one. Maybe deprecation of some sort
 from scipy.spatial.distance import cdist
 from tqdm import tqdm
 from collections import deque
-import pickle
 
 from utils import numerical_sort, load_chunk, loadContours, get_mask
 
 
-class WaveTrack:
-    _id_counter = 0
 
-    def __init__(self, centroid, ellipse, frame_idx, fps, gsd):
-        WaveTrack._id_counter += 1
-        self.id = WaveTrack._id_counter
+class WaveTracker:
+    def __init__(self, fps, image_shape, gsd, phase_speed, min_age=5,
+                 max_area_change=0.25, baseline=5):
         self.fps = fps
         self.gsd = gsd
-        self.dt = 1 / fps
-
-        self.centroids = deque(maxlen=15) #x, y coordinates of the centroid of the wave in each frame. creates a moving window of the last 15 frames
-        self.ellipses = deque(maxlen=15) #parameters of the fitted ellipse in each frame. creates a moving window of the last 15 frames
-        self.areas = deque(maxlen=15)  # track ellipse areas
-        self.birth_frame = frame_idx #the frame index where the wave was first detected
-        self.missed = 0 #track number of frames where the wave was not detected to allow for temporary occlusions or missed detections
-
-        self.centroids.append(centroid) #add the initial centroid to the deque
-        self.ellipses.append(ellipse) #add the initial ellipse parameters to the deque
-        self.areas.append(self._ellipse_area(ellipse))
-
-    def update(self, centroid, ellipse):
-        self.centroids.append(centroid)
-        self.ellipses.append(ellipse)
-        self.areas.append(self._ellipse_area(ellipse))
-        self.missed = 0
-
-    def mark_missed(self):
-        self.missed += 1
-
-    def _ellipse_area(self, ellipse):
-        #Calculate ellipse area
-        (cx, cy), (MA, ma), angle = ellipse
-        return np.pi * (MA / 2) * (ma / 2)
-
-    def overlaps_with(self, new_ellipse, overlap_threshold=0.0):
-        """
-        Check if new_ellipse spatially overlaps with the most recent ellipse.
-        Uses a conservative bounding-circle overlap: two ellipses are considered
-        overlapping if the distance between their centers is less than the sum
-        of their semi-major axes scaled by overlap_threshold.
-
-        overlap_threshold=0.0  -> centroids must be within touching distance
-        overlap_threshold=-0.5 -> require 50% overlap (stricter)
-        overlap_threshold=0.5  -> allow up to 50% gap (looser)
-        """
-        if not self.ellipses:
-            return True  # no history yet, always accept
-
-        (cx0, cy0), (MA0, ma0), _ = self.ellipses[-1]
-        (cx1, cy1), (MA1, ma1), _ = new_ellipse
-
-        dist = np.sqrt((cx1 - cx0) ** 2 + (cy1 - cy0) ** 2)
-        # semi-major radii (MA is the full axis length in cv2)
-        r0 = max(MA0, ma0) / 2
-        r1 = max(MA1, ma1) / 2
-
-        return dist < (r0 + r1) * (1 + overlap_threshold)
-
-    def area_is_consistent(self, new_ellipse, max_area_ratio=1.25):
-        """
-        Reject matches where the new ellipse area differs too much from
-        the tracked ellipse area. Prevents small noise from being stitched
-        together into a plausible-looking track. Tracks area between last frame and next frame
-
-        max_area_ratio=1.25 -> new ellipse can be at most 1.25x larger or smaller
-        """
-        if not self.areas:
-            return True
-
-        old_area = self.areas[-1]
-        (_, (MA1, ma1), _) = new_ellipse
-        new_area = np.pi * (MA1 / 2) * (ma1 / 2)
-
-        if old_area < 1e-3:
-            return False
-
-        ratio = max(new_area / old_area, old_area / new_area)
-        return ratio < max_area_ratio
-
-    @property
-    def area_stability(self):
-        #Check if area is relatively stable (low coefficient of variation) - across entire deque
-        if len(self.areas) < 3:
-            return True  # not enough data yet
-        areas_array = np.array(self.areas)
-        cv = np.std(areas_array) / np.mean(areas_array)  # coefficient of variation
-        return cv < 0.1  # area shouldn't change more than 10%
-
-    @property
-    def crest_length(self):
-        #major axis of current ellipse
-        (cx, cy), (MA, ma), angle = self.ellipses[-1] #selects the most recent ellipse parameters - back of the deque
-        return max(MA, ma) * self.gsd
-
-    @property
-    def speed(self):
-        #define the speed of the wave - difference in centroid position over time (last two positions)
-        if len(self.centroids) < 2:
-            return None #not enough data to calculate speed
-        dp = np.array(self.centroids[-1]) - np.array(self.centroids[-2]) #difference in position between the last two centroids
-        speed_per_frame = np.linalg.norm(dp) #euclidian distance between the two centroids - pixels per frame
-        return speed_per_frame * self.fps * self.gsd #*ground sampling distance to convert to real world units meters per second
-
-    @property
-    def smooth_speed(self):
-        #speed from linear regression over entire centroid history - reduces the noise from instantaneous speed
-        if len(self.centroids) < 3:
-            return self.speed
-        pts = np.array(self.centroids)
-        t = np.arange(len(pts)) * self.dt
-        vx = np.polyfit(t, pts[:, 0], 1)[0] #slope of the linear fit for x coordinates - 1st degree polynomial
-        vy = np.polyfit(t, pts[:, 1], 1)[0] #slope of the linear fit for y coordinates
-        speed_px_per_sec = np.sqrt(vx**2 + vy**2) #euclidian speed from the linear fit - pixels per frame per second
-        return speed_px_per_sec * self.gsd
-
-    def lambda_contribution(self):
-        #returns the speed and crest length to help build the distribution
-        #call once per frame while wave tracking is active
-        s = self.smooth_speed
-        if s is None:
-            return None
-        l = self.crest_length
-        return (s, l)
-
-
-
-
-#when building a class - write the attributes first: what data do I need to store?
-#then write the methods: what do I need to do with that data? how do I want to interact with it?
-#an overall update function can run the methods in a complete and clean sequence
-class WaveTracker:
-
-    def __init__(self, fps, image_shape, gsd, max_distance=50, max_missed=5, min_track_length=5, overlap_threshold=0.5, max_area_ratio=1.25, track_overlap_fraction=1.0):
-        self.tracks = {} #dictionary of active waves
-        self.fps = fps #frames per second
-        self.gsd = gsd #ground sampling distance - pixel scale to convert to meters
-        self.max_distance = max_distance #maximum distance in pixels to consider a detection as part of an existing track
-        self.max_missed = max_missed #maximum number of consecutive missed detections before a track is terminated
-        self.min_track_length = min_track_length  #minimum number of frames a track must exist to be considered valid
-        self.overlap_threshold = overlap_threshold
-        self.max_area_ratio = max_area_ratio
-        self.track_overlap_fraction = track_overlap_fraction
-        self.frame_idx = 0
         self.image_shape = image_shape
-
-        self.lambda_accumulator = [] #list to accumulate speed and crest length pairs for building the distribution
-
-    def update(self, filtered_contours):
-
-        #pass already filtered contours for the frame, returns active tracking
-        detections = self._fit_ellipses(filtered_contours, self.image_shape) #fit ellipses to the contours and get centroids and ellipse parameters
-        self._match_and_update(detections)
-        self._suppress_overlapping_tracks(overlap_fraction=self.track_overlap_fraction)
-        self._accumulate_lambda()
-        self._prune()
-        self.frame_idx += 1
-        return self.tracks
+        self.max_speed = 1.5 * phase_speed  # m/s, physical cap
+        self.max_distance = self.max_speed / (fps * gsd)  # px/frame implied by the cap
+        self.min_age = min_age  # keep >= baseline. How many frames a track must exist to count towards the lambda distribution
+        self.max_area_change = max_area_change  #25% change larger or smaller is allowed
+        self.baseline = baseline  # frames used for the speed estimate
+        self.prev = []  # [{'hist', 'area', 'age'}]
+        self.samples = []  # (speed m/s, crest length m)
 
     def _fit_ellipses(self, contours, image_shape):
         detections = []
         h, w = image_shape
         for cont in contours:
-            cont = np.asarray(cont, dtype=np.float32) #change the type to float32 to avoid errors in cv2
+            cont = np.asarray(cont, dtype=np.float32)
 
             if len(cont) < 5:
                 continue
-
-            area = cv2.contourArea(cont)
-            if area < 10:  # reject small noise contours  #FIXME: play with this number - originally 500 - 150 works okay too
+            if cv2.contourArea(cont) < 50:
                 continue
 
-            ellipse = cv2.fitEllipse(cont) #fit an ellipse to the contour - returns (center (x, y), (major axis, minor axis), angle of rotation)
-            x, y = ellipse[0] #centroid location of the ellipse
-            MA, ma = ellipse[1] #major and minor axis lengths of the ellipse
+            hull = cv2.convexHull(cont)
+            if len(hull) < 8:
+                continue
+            hull_area = cv2.contourArea(hull)
+            if hull_area < 1e-3:
+                continue
 
-            # guard against NaN/inf in ellipse center
+            ellipse = cv2.fitEllipse(cont)
+            x, y = ellipse[0]
+            MA, ma = ellipse[1]
+
             if not np.isfinite(x) or not np.isfinite(y):
                 continue
-
-            if not (0 <= x <= w and 0 <= y <= h): #toss ellipses if they are somehow outside the image bounds
+            if not (0 <= x <= w and 0 <= y <= h):
                 continue
-
-            # reject ellipses that are unrealistically large
-            max_axis = max(MA, ma)
-            if max_axis > w * 0.6:  # reject if major axis > 60% of image width
-                continue
-
-            # reject degenerate ellipses (nearly a line)
+            # if max(MA, ma) > w * 0.6:
+            #     continue
             if ma < 1e-3:
                 continue
 
-            # Minimum area threshold for ellipse
-            ellipse_area = np.pi * (MA / 2) * (ma / 2)
-            if ellipse_area < 200:  #FIXME: minimum ellipse area in pixels - important tuning parameter - originally 200
-                continue
-
-            if min(MA, ma) / max(MA, ma) > 0.8:  # reject near-circular ellipses
-                continue  #FIXME: consider removing this
+            # ellipse_area = np.pi * (MA / 2) * (ma / 2)
+            # if ellipse_area < 200:
+            #     continue
+            # if ellipse_area / hull_area > 2.0:   # ellipse much bigger than its hull
+            #     continue
 
             detections.append((np.array([x, y]), ellipse))
         return detections
 
-    def _match_and_update(self, detections):
-        #use hungarian algorithm to match detections to existing tracks based on distance between centroids, then update matched tracks and create new tracks for unmatched detections
+    def update(self, filtered_contours):
+        detections = self._fit_ellipses(filtered_contours, self.image_shape)
+        det_area = np.array([np.pi * (e[1][0] / 2) * (e[1][1] / 2) for _, e in detections])
+        match = {}
 
-        active_ids = list(self.tracks.keys()) #get the IDs of currently active tracks - ordered list to allow for indexing
+        if self.prev and detections:
+            prev_c = np.array([p['hist'][-1] for p in self.prev])
+            prev_a = np.array([p['area'] for p in self.prev])
+            det_c = np.array([d[0] for d in detections])
 
-        if not active_ids:  #if there are no active tracks, initialize new tracks for all detections
-            for centroid, ellipse in detections:  #loop over all detections (centroid and ellipse)
-                t = WaveTrack(centroid, ellipse, self.frame_idx, self.fps, self.gsd) #create new tracking object
-                self.tracks[t.id] = t  #store the new track using a unique ID
-            return
+            cost = cdist(prev_c, det_c)
+            ratio = det_area[None, :] / prev_a[:, None]  # new area / previous area
+            bad = (cost > self.max_distance) | (np.abs(ratio - 1) > self.max_area_change)
+            cost[bad] = 1e6  # gate before assignment
+            rows, cols = linear_sum_assignment(cost)
+            match = {j: i for i, j in zip(rows, cols) if cost[i, j] < 1e6}
 
-        if not detections: # if there are no detections, mark all active tracks as missed and return
-            for tid in active_ids:
-                self.tracks[tid].mark_missed() #for each active track, increase the missed counter if track is not detected
-            return
-
-        track_centroids = np.array([self.tracks[tid].centroids[-1] for tid in active_ids]) #get the most recent centroid for each active track
-        det_centroids = np.array([d[0] for d in detections]) #get the centroids from the current detections
-        cost = cdist(track_centroids, det_centroids) #compute pair wise distances between tracked and detected centroids cost[i, j] = distance(track_centroids[i], det_centroids[j])
-        row_idx, col_idx = linear_sum_assignment(cost) # find the best matches between tracks and detections - given a cost matrix, find the optimal assignments that minimize the total cost
-        #Tries to find the best matches between existing tracks and new detections - smallest distance between tracks and detections
-
-        matched_tracks = set() #create unique elements to track which tracks and detections have been matched to avoid double counting
-        matched_dets = set()
-
-        for r, c in zip(row_idx, col_idx):
-            if cost[r, c] < self.max_distance:
-                track = self.tracks[active_ids[r]]
-                _, new_ellipse = detections[c]
-
-                # Reject match if ellipses don't overlap spatially
-                if (not track.overlaps_with(new_ellipse, overlap_threshold=self.overlap_threshold) or
-                        not track.area_is_consistent(new_ellipse, max_area_ratio=self.max_area_ratio)):
-                    self.tracks[active_ids[r]].mark_missed()
-                    matched_dets.add(c)
-                    t = WaveTrack(*detections[c], self.frame_idx, self.fps, self.gsd)
-                    self.tracks[t.id] = t
-                    continue
-
-                track.update(*detections[c])
-                matched_tracks.add(r)
-                matched_dets.add(c)
-
-        for r, tid in enumerate(active_ids):  #handle the unmatched trakcs - if a track was not matched to any detection, mark it as missed
-            if r not in matched_tracks:
-                self.tracks[tid].mark_missed()
-
-        for c, det in enumerate(detections): #handle unmatched detections - if a detection was not matched to any track, initialize a new track for it
-            if c not in matched_dets:
-                t = WaveTrack(*det, self.frame_idx, self.fps, self.gsd)
-                self.tracks[t.id] = t
-
-    def _suppress_overlapping_tracks(self, overlap_fraction=1.0):
-        '''Plugs the centroid of one ellipse into the ellipse equation of the other to determine if they overlap.
-        If the value is less than 1, the point is inside the ellipse. If the value is greater than 1, the point is outside the ellipse. If the value is equal to 1, the point is on the boundary of the ellipse.
-        The overlap fraction can scale the threshold for determining if two tracks are considered overlapping. For example, an overlap_fraction of 0.5 would consider two tracks to be overlapping if the centroid
-        of one track is within half the distance of the ellipse boundary of the other track. An overlap_fraction of 1.0 would require the centroid to be within the full distance of the ellipse boundary for the
-        tracks to be considered overlapping. Adjusting this parameter allows for more or less strict criteria for suppressing overlapping tracks based on their spatial proximity.
-
-        The ellipse equation is as follows:
-
-        (x / MajorAxis)^2 + (y / MinorAxis)^2 <= overlap_fraction (1.0)
-
-        The rotation matrix for an ellipse with angle theta is:
-
-        [x_rot, y_rot] = [[cos(angle_a), -sin(angle_a)]; [sin(angle_a), cos(angle_a)]] * [dx, dy]
-
-        where (dx, dy) are the gap between the centroid of the point and the center of the ellipse.
-        x_rot and y_rot are the location of the point being evaluated inside the ellipse reference frame. This is what is plugged into the ellipse equation.'''
-
-        ids = list(self.tracks.keys())  #grab all track ids into a list
-        to_delete = set()  #empty set to collect ids for removal
-
-        for i in range(len(ids)):
-            for j in range(i + 1, len(ids)):  #iterate over every unique pair of tracks
-                tid_a, tid_b = ids[i], ids[j]
-                if tid_a in to_delete or tid_b in to_delete:  #skip the pair if it is already marked for deletion
-                    continue
-
-                track_a = self.tracks[tid_a]  #define track a and track b
-                track_b = self.tracks[tid_b]
-
-                (cx_a, cy_a), (MA_a, ma_a), angle_a = track_a.ellipses[-1]  #unpack the most recent ellipse [-1] in the deque for track a and track b
-                (cx_b, cy_b), (MA_b, ma_b), angle_b = track_b.ellipses[-1]  # unpacks the centroid location, major and minor axis lengths, and orientation angle
-
-                # check if centroid of b is inside ellipse of a, and vice versa
-                def point_in_ellipse(px, py, cx, cy, MA, ma, angle_deg):
-                    '''Asks the question: is a point inside an ellipse - scaled by a factor?'''
-                    angle_rad = np.deg2rad(angle_deg)  #convert ellipse rotation angle from degrees to radians
-                    cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)  #precompute trig values
-                    dx, dy = px - cx, py - cy  #translates the point to the ellipse center
-                    # rotate point into ellipse frame
-                    x_rot = cos_a * dx + sin_a * dy  #rotate the point into the ellipses frame of reference - basically unrotates the ellipse
-                    y_rot = -sin_a * dx + cos_a * dy  #this is necessary because the point must be aligned with the ellipse axis for the ellipse equation to work correctly
-                    return (x_rot / (MA / 2)) ** 2 + (y_rot / (ma / 2)) ** 2 <= overlap_fraction  #return True if the point is inside the ellipse defined by the major and minor axes, scaled by the overlap fraction (1.0 is the exact boundary, <1.0 shrinks it (softer filter), >1.0 expands it (stricter filter))
-
-                b_in_a = point_in_ellipse(cx_b, cy_b, cx_a, cy_a, MA_a, ma_a, angle_a)  #check if either centroid is inside the other track's ellipse
-                a_in_b = point_in_ellipse(cx_a, cy_a, cx_b, cy_b, MA_b, ma_b, angle_b)
-
-                if b_in_a or a_in_b:
-                    area_a = track_a.areas[-1]  #get the most recent area for track a and track b
-                    area_b = track_b.areas[-1]
-                    to_delete.add(tid_a if area_a < area_b else tid_b)  #mark the track with the smaller area for deletion - this removes smaller tracks that are likely noise inside bigger tracks - often happens in large foamy waves
-
-        for tid in to_delete:  #if the track id is inside the to_delete set, remove it from the tracks dictionary
-            del self.tracks[tid]
-
-    def _accumulate_lambda(self):
-        #each active track contributes on (speed, crest length) pair per frame to build the distribution
-        #Only accumulate from tracks that have persisted long enough
-        for track in self.tracks.values():
-            # Only count waves that have been tracked for min_track_length frames
-            track_age = self.frame_idx - track.birth_frame
-            if track_age >= self.min_track_length:
-                contribution = track.lambda_contribution()
-                if contribution is not None:
-                    self.lambda_accumulator.append(contribution)
-
-    def _prune(self):
-        to_delete = [tid for tid, t in self.tracks.items()
-                     if t.missed > self.max_missed or not t.area_stability]
-        for tid in to_delete:
-            del self.tracks[tid]
-
-    def compute_lambda(self, speed_bins, total_area):
-
-        if not self.lambda_accumulator:
-            return None
-
-        speeds = np.array([s for s, _ in self.lambda_accumulator]) #extract speeds from the accumulated contributions
-        lengths = np.array([l for _, l in self.lambda_accumulator]) #extract crest lengths from the accumulated contributions
-
-        dc = speed_bins[1] - speed_bins[0] #bin width for speed
-        n_bins = len(speed_bins) - 1  # number of intervals between edges
-        Lambda = np.zeros(n_bins)  #initialize empty array to fill later
-
-        for i in range(n_bins):
-            mask = (speeds >= speed_bins[i]) & (speeds < speed_bins[i + 1]) #select contributions that fall within the current speed bin
-            Lambda[i] = lengths[mask].sum() #* dt #sum the total crest lengths - dt was added in to fix the units
-
-        Lambda /= (total_area * dc)  #normalize by the total area and bin width to get the final lambda distribution
-
-        return Lambda
+        curr, out = [], []
+        for j, (centroid, ellipse) in enumerate(detections):
+            speed = None
+            if j in match:
+                p = self.prev[match[j]]
+                age = p['age'] + 1
+                hist = (p['hist'] + [centroid])[-(self.baseline + 1):]
+                k = len(hist) - 1  # frames spanned by the history
+                speed = np.linalg.norm(hist[-1] - hist[0]) / k * self.fps * self.gsd
+                if age >= self.min_age:
+                    self.samples.append((speed, max(ellipse[1]) * self.gsd))
+            else:
+                age = 0
+                hist = [centroid]
+            curr.append({'hist': hist, 'area': det_area[j], 'age': age})
+            out.append((ellipse, age, speed))
+        self.prev = curr
+        return out
 
     def sum_dl(self, speed_bins):
-
-        if not self.lambda_accumulator:
-            return None  #if there are no contributions, return None
-
-        speeds = np.array([s for s, _ in self.lambda_accumulator])  # extract speeds from the accumulated contributions
-        lengths = np.array([l for _, l in self.lambda_accumulator])  # extract crest lengths from the accumulated contributions
-
-        dc = speed_bins[1] - speed_bins[0]  # bin width for speed
-        n_bins = len(speed_bins) - 1  # number of intervals between edges
-        Lambda = np.zeros(n_bins)  # initialize empty array to fill later
-
-        for i in range(n_bins):
-            mask = (speeds >= speed_bins[i]) & (speeds < speed_bins[i + 1])  # select contributions that fall within the current speed bin
-            Lambda[i] = lengths[mask].sum()  # * dt #sum the total crest lengths - dt was added in to fix the units
-
-        return Lambda
+        if not self.samples:
+            return np.zeros(len(speed_bins) - 1)
+        s, l = np.array(self.samples).T
+        return np.histogram(s, bins=speed_bins, weights=l)[0]
 
 
+def plot_tracks(image, detections, frame_idx, chunk, min_age, save_path):
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.imshow(image, cmap='gray')
+
+    for k, (ellipse, age, speed) in enumerate(detections):
+        (cx, cy), (MA, ma), angle = ellipse
+        color = plt.get_cmap('tab20')(k % 20)
+        mature = age >= min_age
+
+        if mature:
+            ax.add_patch(Ellipse((cx, cy), MA, ma, angle=angle, fill=False,
+                             edgecolor=color, linewidth=1.5,
+                             linestyle='-' if mature else ':'))
+            if speed is not None:
+                ax.text(cx, cy, f'{speed:.1f} m/s', color=color, fontsize=7,
+                        ha='center', va='center')
+
+    ax.set_title(f'Chunk {chunk:04d}, frame {frame_idx}  |  {len(detections)} detections')
+    ax.set_xlabel('x (px)')
+    ax.set_ylabel('y (px)')
+    fig.savefig(save_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
 
 
-def compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir, gsd, fps, speed_bins=0.2):
+def compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir, gsd, fps, phase_speed, speed_bins=0.2, plot=False, plot_every=50, plot_dir=None):
 
     #determine the number of chunks to iterate through
     n_chunks = len(glob.glob(os.path.join(rectified_images_dir, '*.dat')))
 
     dc = speed_bins  # speed bin size for lambda computation
-    c_bins = np.arange(0, 20 + dc, dc)  # speed bins
+    c_bins = np.arange(0, 30 + dc, dc)  # speed bins
+
+    if plot:
+        os.makedirs(plot_dir, exist_ok=True)
 
     Lambda = np.zeros(len(c_bins) - 1)  # set up empty array for the lambda distribution for all chunk
     Area_total = 0.0 #total area for all chunks
@@ -408,8 +165,8 @@ def compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir,
         Area_total += A_tot_chunk  #add the total area for this chunk to the overall total area
 
         # instantiate the wave tracking class
-        tracker = WaveTracker(fps=fps, gsd=gsd, image_shape=(h, w), max_distance=20, max_missed=3, min_track_length=7, overlap_threshold=0.1, max_area_ratio=1.25, track_overlap_fraction=1.0)
-
+        tracker = WaveTracker(fps=fps, gsd=gsd, image_shape=(h, w), phase_speed=phase_speed,
+                              min_age=int(fps * (2/3)), max_area_change=0.25, baseline=1)  #int(fps * (2/3))
         #load in the contours for each chunk
         chunk_contours = loadContours(os.path.join(filtered_contours_dir, f'Filtered_contours_chunk_{chunk:04d}.pkl')) #list of shape (n_frames, n_contours_in_frame, n_points_in_conours, (x, y))
 
@@ -418,7 +175,11 @@ def compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir,
             #load in the contours for each frame
             frame_contours = chunk_contours[frame]  #get the contours for the current frame. shape: (n_contours_in_frame, n_points_in_conours, (x, y))
 
-            tracker.update(frame_contours) #update the wave tracking class for each frame
+            detections = tracker.update(frame_contours)
+
+            if plot and frame % plot_every == 0:
+                plot_tracks(chunk_images[frame], detections, frame, chunk, tracker.min_age,
+                            os.path.join(plot_dir, f'tracks_chunk{chunk:04d}_frame{frame:05d}.png'))
 
         Lambda += tracker.sum_dl(speed_bins=c_bins)  #lambda distribution per chunk
 
@@ -444,7 +205,7 @@ def compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir,
     ax = fig.add_subplot(121)
     ax.loglog(c, Lambda)
     ax.loglog(c, Lambda_c6, '--', label=r'$c^{-6}$')
-    ax.set_xlabel('Wave Speed (m/s)')
+    ax.set_xlabel('Breaking Wave Speed (m/s)')
     ax.set_ylabel(r'$\Lambda(c)$ (s * m$^{-2}$)')  # units of m^-2, time is absorbed in the calculate lambda function
     ax.set_title('\u039B(c) Distribution of Breaking Waves')
     ax.set_ylim(1e-8, 1e0)
@@ -453,7 +214,7 @@ def compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir,
 
     ax1 = fig.add_subplot(122)
     ax1.loglog(c, fifth_moment, color='salmon')
-    ax1.set_xlabel('Wave Speed (m/s)')
+    ax1.set_xlabel('Breaking Wave Speed (m/s)')
     ax1.set_ylabel(r'c$^5$ * $\Lambda(c)$ * dc (m$^4$ s$^{-5}$)')
     ax1.set_title('Fifth Moment of the \u039B(c) Distribution')
     ax1.set_ylim(1e-8, 1e0)
@@ -467,8 +228,9 @@ def compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir,
     return Lambda
 
 
-if __name__ == "__main__":
 
+
+if __name__ == "__main__":
 
     rectified_images_dir = '/mnt/d/Wave_Breaking/rectified_images'
 
@@ -485,10 +247,13 @@ if __name__ == "__main__":
 
     lambda_save_dir = '/mnt/d/Wave_Breaking/figs'
 
-    Lambda = compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir, gsd, fps)
+    plot_dir = '/mnt/d/Wave_Breaking/figs/ellipse'
 
-    #TODO: really need to go back into the image processing and check for noise. Only the large waves with velocities over 1 m/s are actually significant here.
+    peak_period = 3.88 #seconds pulled from the awac datatable for the corresponding day of the data collection
+    phase_speed = 9.81 * peak_period / (2 * np.pi) # phase speed in m/s based on the deep water dispersion relation
 
-    #TODO: convex hull from contours?
+    Lambda = compute_lambda(rectified_images_dir, filtered_contours_dir, lambda_save_dir, gsd, fps, phase_speed, plot=True, plot_every=25, plot_dir=plot_dir)
 
-    #TODO: we want to plot some sample images as well here.
+
+#TODO: add kalman filter to help with wave tracking and prediction
+

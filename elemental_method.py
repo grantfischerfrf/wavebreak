@@ -24,18 +24,18 @@ def calculateVelocities(vx, vy, fps, spatial_res, spacing):
     return cx, cy
 
 
-def filter_lowSpeeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, slowspeeds=1.0):
+def filter_Speeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, maxSpeed, slowspeeds=1.0):
 
     #slowspeeds is filter in m/s
 
     speeds = np.sqrt(CXi_raw ** 2 + CYi_raw ** 2)
-    index_speeds = np.where(speeds >= slowspeeds)  #filter out slow velocities based on threshold
+    index_speeds = (speeds >= slowspeeds) & (speeds <= maxSpeed)  #filter out slow velocities based on threshold
     ipc, jpc, CXi, CYi, dl = ipc_raw[index_speeds], jpc_raw[index_speeds], CXi_raw[index_speeds], CYi_raw[index_speeds], dl_raw[index_speeds]
 
     return ipc, jpc, CXi, CYi, dl
 
 
-def whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir, save_dir, fps, gsd, spacing=5, plot=False):
+def whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir, save_dir, fps, gsd, spacing=5, plot=False, plot_every=50):
 
     #loop through each data chunk and compute the velocities of each element in a detected whitecap
     n_chunks = len(sorted(glob.glob(os.path.join(filtered_contours_dir, '*.pkl')), key=utils.numerical_sort)) #number of chunks to process
@@ -114,7 +114,7 @@ def whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir,
             dl_plot = np.concatenate(dl_list)
 
 
-            if plot:
+            if plot and f % plot_every == 0:
                 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 4), sharex=True, sharey=True)
 
                 ax1.imshow(images[f], cmap='gray')
@@ -133,8 +133,8 @@ def whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir,
                 ax2.set_aspect('equal')
 
                 plt.tight_layout()
-                plt.savefig(f'/mnt/d/Wave_Breaking/figs/cx_and_cy_{f}.png')
-                plt.show()
+                plt.savefig(f'/mnt/d/Wave_Breaking/figs/cx_cy/{n}_cx_and_cy_{f}.png')
+                # plt.show()
                 plt.close('all')
 
             # Append this frame's data
@@ -149,17 +149,18 @@ def whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir,
         with open(save_path, 'wb') as f:
             pickle.dump({'ipc': all_ipc, 'jpc': all_jpc, 'CXi': all_CXi, 'CYi': all_CYi, 'dl': all_dl}, f)
 
-def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gsd, speed_bins=0.2, plot=False, plot_every=100):
+def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gsd, phase_speed, speed_bins=0.2, plot=False, plot_every=100):
 
     n_chunks = sorted(glob.glob(os.path.join(whitecap_chunk_dir, '*.pkl')), key=utils.numerical_sort)
 
     dc = speed_bins #speed bin size for lambda computation
-    c_bins = np.arange(0, 20 + dc, dc) #speed bins
+    c_bins = np.arange(0, 30 + dc, dc) #speed bins
 
     total_area = 0.0 #total cumulative area over all chunks
     Lambda = np.zeros(len(c_bins) - 1)  # set up empty array for the lambda distribution for each chunk
     for n in tqdm(range(len(n_chunks)), colour='yellow'):
         tqdm.write(f'Processing Chunk {n:04d}')
+        # n = 1
 
         #pull the whitecap flow data for the matching chunk
         flow_variables = np.load(os.path.join(whitecap_chunk_dir, f'whitecap_flow_{n:04d}.pkl'), allow_pickle=True)
@@ -171,7 +172,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
 
         #pull the rectified imagery for the matching chunk
         images, meta = utils.load_chunk(rectified_images_dir, n)
-        extent = (meta['x_grid_min'], meta['x_grid_max'], meta['y_grid_min'], meta['y_grid_max']) #extents of the rectified image in meters world coordinates
+        # extent = (meta['x_grid_min'], meta['x_grid_max'], meta['y_grid_min'], meta['y_grid_max']) #extents of the rectified image in meters world coordinates
 
         #get mask for buffer zone around the rectified image
         valid_mask = utils.get_mask(images[0])
@@ -184,11 +185,12 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
 
         amp = 5  # amplitude factor for quiver plot
         for f in range(len(CXi_list)):  # loop through frames - not using n_frames variable because not all frames have valid contours left on them
+            # f = 400
 
             ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw = ipc_list[f], jpc_list[f], CXi_list[f], CYi_list[f], dl_list[f]  # Unpack contour coordinate locations and velocity values for a frame "n"
 
             # filter out slow velocities
-            ipc, jpc, CXi, CYi, dl = filter_lowSpeeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, slowspeeds=0.0)  ##TODO: find a good cutoff for this (maybe in literature) - 0.6 is ok for now
+            ipc, jpc, CXi, CYi, dl = filter_Speeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, maxSpeed=1.5*phase_speed, slowspeeds=5.0)  ##TODO: find a good cutoff for this (maybe in literature) - 0.6 is ok for now
 
             dXipc = list()  # create empty lists for data
             dYjpc = list()
@@ -226,7 +228,6 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
 
             for k in range(len(c_bins) - 1):  # loop through speed bins
                 mask = (co >= c_bins[k]) & (co < c_bins[k + 1])
-
                 Lambda[k] += np.sum(dl_out[mask])
 
             # plot outward facing vectors
@@ -249,7 +250,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
                     )
 
                 plt.savefig(os.path.join(lambda_save_dir, f'quiver_chunk{n}_frame{f}.png'), bbox_inches='tight')
-                plt.show()
+                # plt.show()
                 plt.close('all')
 
     Lambda /= (total_area * dc)
@@ -264,7 +265,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
     print(f'Estimated Energy dissipation rate: {epsilon:.4e} W/m^2')
 
     # c**-6 reference line
-    idx = 20  # pick a reasonable point away from noise
+    idx = 30  # pick a reasonable point away from noise
     c_ref = c[idx]
     Lambda_ref = Lambda[idx]
     Lambda_c6 = Lambda_ref * (c / c_ref) ** (-6)
@@ -274,7 +275,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
     ax = fig.add_subplot(121)
     ax.loglog(c, Lambda)
     ax.loglog(c, Lambda_c6, '--', label=r'$c^{-6}$')
-    ax.set_xlabel('Wave Speed (m/s)')
+    ax.set_xlabel('Breaking Wave Speed (m/s)')
     ax.set_ylabel(r'$\Lambda(c)$ (s * m$^{-2}$)')  # units of m^-2, time is absorbed in the calculate lambda function
     ax.set_title('\u039B(c) Distribution of Breaking Waves')
     ax.set_ylim(1e-8, 1e0)
@@ -283,12 +284,12 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
 
     ax1 = fig.add_subplot(122)
     ax1.loglog(c, fifth_moment, color='salmon')
-    ax1.set_xlabel('Wave Speed (m/s)')
+    ax1.set_xlabel('Breaking Wave Speed (m/s)')
     ax1.set_ylabel(r'c$^5$ * $\Lambda(c)$ * dc (m$^4$ s$^{-5}$)')
     ax1.set_title('Fifth Moment of the \u039B(c) Distribution')
     ax1.set_ylim(1e-8, 1e0)
     ax1.grid(axis='y')
-    # plt.savefig(os.path.join(lambda_save_dir, 'elemental_Lambda(c).png'), dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(lambda_save_dir, 'elemental_Lambda(c).png'), dpi=300, bbox_inches='tight')
     plt.show()
     plt.close('all')
 
@@ -317,15 +318,22 @@ if __name__ == "__main__":
     dx = float(drone[-2][1])  # dx and dy are the same value
     gsd = dx  # ground sampling distance
 
+    peak_period = 3.88 #seconds pulled from the awac datatable for the corresponding day of the data collection
+    phase_speed = 9.81 * peak_period / (2 * np.pi) # phase speed in m/s based on the deep water dispersion relation
+
     whitecap_save_dir = '/mnt/d/Wave_Breaking/20171791057_whitecap_flow'
-    whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir, whitecap_save_dir, fps, gsd, 5, plot=False)
+    # whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir, whitecap_save_dir, fps, gsd, 5, plot=True, plot_every=25)
 
     lambda_save_dir = '/mnt/d/Wave_Breaking/figs/quiver'
-    compute_Lambda(whitecap_save_dir, rectified_images_dir, lambda_save_dir, gsd, speed_bins=0.2, plot=True, plot_every=100)
+    compute_Lambda(whitecap_save_dir, rectified_images_dir, lambda_save_dir, gsd, phase_speed, speed_bins=0.2, plot=True, plot_every=25)
 
 
 
-#TODO: better filtering of contours in the preprocessing step may allow for the distribution to follow the c^-6 line
+#TODO:Preform a similar histogram to what was originally done for area to the speed data to find outliers.
+
+#TODO: add kalman filter for prediction of where the wave should go, this will help with jumping
+
+#TODO: for the kalman filter stay on the contour level for a little bit. make sure that the contour in one frame matches the contour in the next frame (peach et al 2025 approach). Maybe replace filter contours fucntion with a kalman filter.
 
 
 

@@ -28,7 +28,7 @@ if __name__ == "__main__":
         plot_every=25,
     )
 
-    with Pool(processes=4) as pool:
+    with Pool(processes=2) as pool:
         list(
             tqdm(
                 pool.imap_unordered(worker, range(n_chunks)),
@@ -36,13 +36,13 @@ if __name__ == "__main__":
             )
         )
 
-    unfiltered_contours_dir = '/mnt/d/Wave_Breaking/unfiltered_contours'
-    filtered_contours_save_dir = '/mnt/d/Wave_Breaking/filtered_contours'
-    optical_flow_dir = '/mnt/d/Wave_Breaking/optical_flow'
-
-    plot_dir = '/mnt/d/Wave_Breaking/figs/filtered_contours'  # directory to save plots of filtered contours
-
-    filter_contours(unfiltered_contours_dir, optical_flow_dir, filtered_contours_save_dir, variance_thresh=0.2, plot=True, plot_interval=25, rectified_data_dir=rectified_data_dir, plot_dir=plot_dir)
+    # unfiltered_contours_dir = '/mnt/d/Wave_Breaking/unfiltered_contours'
+    # filtered_contours_save_dir = '/mnt/d/Wave_Breaking/filtered_contours'
+    # optical_flow_dir = '/mnt/d/Wave_Breaking/optical_flow'
+    #
+    # plot_dir = '/mnt/d/Wave_Breaking/figs/filtered_contours'  # directory to save plots of filtered contours
+    #
+    # filter_contours(unfiltered_contours_dir, optical_flow_dir, filtered_contours_save_dir, variance_thresh=0.2, plot=True, plot_interval=25, rectified_data_dir=rectified_data_dir, plot_dir=plot_dir)
 
 
 

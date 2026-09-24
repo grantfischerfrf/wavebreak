@@ -25,7 +25,7 @@ def threshold_image(image, mask, VARIANCE_THRESH=200, GRADIENT_THRESH=0.5):
     close_alongcrest = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 5))
 
     # morphological cleanup
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, cross, iterations=2) #erosion followed by dilation. Closes small holes outside the area of interest.
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, cross, iterations=1) #erosion followed by dilation. Closes small holes outside the area of interest.
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, cross, iterations=1) #dilation followed by erosion. Closes small holes inside the area of interest.
     # plt.imshow(binary, cmap='gray')
     # plt.show()
@@ -54,9 +54,11 @@ def threshold_image(image, mask, VARIANCE_THRESH=200, GRADIENT_THRESH=0.5):
     grad_bin_bool = grad_bin_tri > 0 #turn the binary gradient image into a boolean mask to it can be combined with other boolean masks
     keep = np.zeros_like(binary)
     for label_id in range(1, num_labels):  # loop through all labels/blobs
-        blob_mask = labels == label_id #isolates a single blob, pixels become true where that blob is and false everywhere else
-        edge_pixels_in_blob = np.count_nonzero(grad_bin_bool & blob_mask) #finds the overlap between the blobs pixels and pixels with a strong gradient and counts them
         blob_area = stats[label_id, cv2.CC_STAT_AREA]  #returns the individual blobs total pixel count
+        if blob_area < 50: #TODO: 50 looked really good for area threshold
+            continue
+        blob_mask = labels == label_id  # isolates a single blob, pixels become true where that blob is and false everywhere else
+        edge_pixels_in_blob = np.count_nonzero(grad_bin_bool & blob_mask) #finds the overlap between the blobs pixels and pixels with a strong gradient and counts them
         gradient_ok = (edge_pixels_in_blob / blob_area >= GRADIENT_THRESH)  # if at least X% of the blobs area coincides with a strong pixel gradient the entire blob is kept - set to 255. Otherwise continue
 
         # check the texture of the blob (broken or unbroken wave)
@@ -272,7 +274,7 @@ def smooth_contour(contour, window_size=5):
 def filter_contours(data_dir, optical_flow_dir, save_dir, spacing=5, persistence_thresh=0.5, variance_thresh=0.2, plot=False, plot_interval=100, rectified_data_dir=None, plot_dir=None):
 
     #get all chunk paths
-    chunk_paths = glob.glob(os.path.join(data_dir, '*.pkl'))
+    chunk_paths = sorted(glob.glob(os.path.join(data_dir, '*.pkl')), key=utils.numerical_sort)
 
     n_chunks = len(chunk_paths)
 
@@ -302,11 +304,10 @@ def filter_contours(data_dir, optical_flow_dir, save_dir, spacing=5, persistence
         valid_mask = utils.get_mask(images[0])
         valid_image = np.where(valid_mask > 0, True, False)
 
-        history = deque(maxlen=5)  #short rolling history of contours for validation of good pixels - motion compensated masks
+        # history = deque(maxlen=5)  #short rolling history of contours for validation of good pixels - motion compensated masks
 
         chunk_filtered_contours = [] #empty list to hold the filtered contours for each chunk
         for frame_idx in tqdm(range(n_frames), leave=False, colour='blue', desc='Frame'):  #loop through all frames in the chunk
-
             frame_contours = contours[frame_idx] #contours for a particular frame, should have shape (N_contours, N_points in contour, 1, 2)
 
             vx = np.memmap(vx_path, dtype='float32', mode='r', shape=shape)[frame_idx, :, :]  # optical flow velocities 'x' frames apart by the spacing (5 in the original case)
@@ -372,7 +373,7 @@ def filter_contours(data_dir, optical_flow_dir, save_dir, spacing=5, persistence
                     continue
 
                 # reject nearly static regions
-                valid = mag_c >= np.percentile(mag_c, 50)  # only consider pixels with magnitude above 90th percentile within contour
+                valid = mag_c >= np.percentile(mag_c, 90)  # only consider pixels with magnitude above 90th percentile within contour
 
                 mag_valid = mag_c[valid]
                 dir_valid = dir_c[valid]
@@ -388,16 +389,17 @@ def filter_contours(data_dir, optical_flow_dir, save_dir, spacing=5, persistence
 
                 # smooth the contour using a hanning window
                 smoothed_contour = smooth_contour(frame_contours[j].squeeze())
+                frame_filtered_contours.append(smoothed_contour)
 
-                # Use magnitude weighted circular variance to determine if contour has coherent motion - works better at rejecting large turbulent foam patches
-                R = np.abs(np.sum(norm_mag_valid * np.exp(1j * dir_valid)) / np.sum(norm_mag_valid))
-                # e^i*theta creates a unit vector on a circle in direction of theta. weighted by magnitude. Summed over all pixels in contour. Divided by sum of magnitudes to normalize
-
-                V = 1 - R  # circular variance
-                if V <= variance_thresh:  # threshold for variance. 0 = all directions the same, 1 = uniform distribution - widely spread
-                    frame_filtered_contours.append(smoothed_contour)
-                else:
-                    count += 1
+                # # Use magnitude weighted circular variance to determine if contour has coherent motion - works better at rejecting large turbulent foam patches
+                # R = np.abs(np.sum(norm_mag_valid * np.exp(1j * dir_valid)) / np.sum(norm_mag_valid))
+                # # e^i*theta creates a unit vector on a circle in direction of theta. weighted by magnitude. Summed over all pixels in contour. Divided by sum of magnitudes to normalize
+                #
+                # V = 1 - R  # circular variance
+                # if V <= variance_thresh:  # threshold for variance. 0 = all directions the same, 1 = uniform distribution - widely spread
+                #     frame_filtered_contours.append(smoothed_contour)
+                # else:
+                #     count += 1
 
             if plot and frame_idx % plot_interval == 0:
                 #plot the filtered contours for each frame as a sanity check
@@ -440,7 +442,7 @@ if __name__ == "__main__":
     save_dir = '/mnt/d/Wave_Breaking/unfiltered_contours' #directory to save contours in
 
     #some waves are so small that the turbulence (high variance) cannot be resolved by the camera. They get reclassified as non breaking and tossed.
-    generate_contours(rectified_data_dir, save_dir, sanity_plot_dir='/mnt/d/Wave_Breaking/figs/unfiltered_contours', VARIANCE_THRESH=200, GRADIENT_THRESH=0.5, plot_every=25)
+    # generate_contours(rectified_data_dir, save_dir, sanity_plot_dir='/mnt/d/Wave_Breaking/figs/unfiltered_contours', VARIANCE_THRESH=200, GRADIENT_THRESH=0.5, plot_every=25)
 
     unfiltered_contours_dir = '/mnt/d/Wave_Breaking/unfiltered_contours'
     filtered_contours_save_dir = '/mnt/d/Wave_Breaking/filtered_contours'
