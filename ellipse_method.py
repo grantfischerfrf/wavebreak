@@ -81,7 +81,7 @@ class WaveTracker:
             ratio = det_area[None, :] / prev_a[:, None]  # new area / previous area
             bad = (cost > self.max_distance) | (np.abs(ratio - 1) > self.max_area_change)
             cost[bad] = 1e6  # gate before assignment
-            rows, cols = linear_sum_assignment(cost)
+            rows, cols = linear_sum_assignment(cost)  #build hungarian algorithm cost matrix
             match = {j: i for i, j in zip(rows, cols) if cost[i, j] < 1e6}
 
         curr, out = [], []
@@ -104,8 +104,8 @@ class WaveTracker:
         return out
 
     def sum_dl(self, speed_bins):
-        if not self.samples:
-            return np.zeros(len(speed_bins) - 1)
+        if not self.samples:  #if nothing in samples
+            return np.zeros(len(speed_bins) - 1)  #return zero array the size of the histogram
         s, l = np.array(self.samples).T
         return np.histogram(s, bins=speed_bins, weights=l)[0]
 

@@ -259,7 +259,7 @@ def build_chunks(frame_paths, chunk_size=500, overlap=5):
     Returns a list of dicts with index bounds into frame_paths.
     """
     nums = np.array([frame_number(p) for p in frame_paths])
-    breaks = np.where(np.diff(nums) != 1)[0] + 1        # index where a new segment starts
+    breaks = np.where(np.diff(nums) != 1)[0] + 1 # new_segment -> where the index of each image is not spaced by 1. This means that there has been a jump in time and a new chunk must be created
     seg_starts = np.concatenate([[0], breaks])
     seg_ends = np.concatenate([breaks, [len(nums)]])    # exclusive
 

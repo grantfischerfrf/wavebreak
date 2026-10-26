@@ -26,6 +26,67 @@ def loadContours(path):
     return contour_list
 
 
+def triangle_threshold_1d(hist):
+    """
+    Finds the optimal threshold split point of a 1D histogram using the Triangle Method.
+
+    Parameters:
+        hist (array-like): Pre-computed 1D histogram (counts/frequencies).
+    Returns:
+        int: The optimal index (bin number) to split the histogram.
+    """
+    hist = np.asarray(hist, dtype=np.float64).flatten()
+    num_bins = len(hist)  #FIXME: add good comments to this code
+
+    # 1. Find the peak of the histogram
+    peak_idx = np.argmax(hist)
+    peak_val = hist[peak_idx]
+
+    # 2. Find the non-zero boundaries of the histogram to locate the furthest extreme
+    non_zero_indices = np.where(hist > 0)[0]
+    if len(non_zero_indices) == 0:
+        return 0
+
+    min_idx = non_zero_indices[0]
+    max_idx = non_zero_indices[-1]
+
+    # 3. Determine if the long tail is to the left or right of the peak
+    # and set up the boundary anchor point (extreme_idx)
+    if (peak_idx - min_idx) > (max_idx - peak_idx):
+        # Long tail is on the left
+        extreme_idx = min_idx
+        search_range = range(extreme_idx, peak_idx)
+    else:
+        # Long tail is on the right
+        extreme_idx = max_idx
+        search_range = range(peak_idx + 1, extreme_idx + 1)
+
+    # 4. Define the line equation parameters between the peak and the extreme end
+    # Line vector from peak to extreme
+    x1, y1 = peak_idx, peak_val
+    x2, y2 = extreme_idx, hist[extreme_idx]
+
+    # Standard line form coefficients: Ax + By + C = 0
+    A = y1 - y2
+    B = x2 - x1
+    C = x1 * y2 - x2 * y1
+    norm = np.sqrt(A ** 2 + B ** 2)
+
+    # 5. Search for the bin index that maximizes the perpendicular distance to the line
+    max_dist = -1
+    best_split_idx = peak_idx
+
+    for x in search_range:
+        y = hist[x]
+        # Perpendicular distance formula from point (x, y) to line Ax + By + C = 0
+        dist = abs(A * x + B * y + C) / norm
+        if dist > max_dist:
+            max_dist = dist
+            best_split_idx = x
+
+    return best_split_idx
+
+
 def get_mask(frame, erode_px=15):
 
     #mask the dark border around the rectified image so that it does not contaminate the contour detection
@@ -74,15 +135,29 @@ def warp_mask(mask, dx, dy):
     return cv2.remap(mask, map_x, map_y, interpolation=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
 
-def load_opticalFlow_frame(optical_flow_dir, chunk_idx, frame):
+def load_opticalFlow(optical_flow_dir, chunk_idx):
     #loads the vx, vy, shape optical flow memmap output for a given directory and chunk index and particular frame in the memmap
     vx_path = os.path.join(optical_flow_dir, f'vx_{chunk_idx:04d}.dat')  # path to optical flow x velocities
     vy_path = os.path.join(optical_flow_dir, f'vy_{chunk_idx:04d}.dat')  # path to y velocities
     shape = tuple(np.load(os.path.join(optical_flow_dir, f'flow_shape_{chunk_idx:04d}.npy')))  # path to the shape of the memory maps
-    vx = np.memmap(vx_path, dtype='float32', mode='r', shape=shape)[frame, :, :] # in relative units of pixels/frame
-    vy = np.memmap(vy_path, dtype='float32', mode='r', shape=shape)[frame, :, :]
+    vx = np.memmap(vx_path, dtype='float32', mode='r', shape=shape) # in relative units of pixels/frame
+    vy = np.memmap(vy_path, dtype='float32', mode='r', shape=shape)
 
     return vx, vy, shape
+
+
+def relativeVel_2_metricVel(vx, vy, fps, spatial_res, spacing):
+    '''convert relative optical flow output to metric units in m/s'''
+
+    dt = spacing / fps
+
+    cx = vx * spatial_res / dt
+    cy = vy * spatial_res / dt
+
+    cx = np.nan_to_num(cx, copy=True, nan=0.0, posinf=None, neginf=None)
+    cy = np.nan_to_num(cy, copy=True, nan=0.0, posinf=None, neginf=None)
+
+    return cx, cy
 
 
 def find_knee(hist, sigma=5):

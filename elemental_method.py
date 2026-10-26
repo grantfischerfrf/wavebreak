@@ -6,23 +6,9 @@ from scipy.interpolate import RegularGridInterpolator
 from tqdm import tqdm
 import os
 import pickle
+from config import Config
 
 import utils
-
-
-def calculateVelocities(vx, vy, fps, spatial_res, spacing):
-    '''convert relative optical flow output to metric units in m/s'''
-
-    dt = spacing / fps
-
-    cx = vx * spatial_res / dt
-    cy = vy * spatial_res / dt
-
-    cx = np.nan_to_num(cx, copy=True, nan=0.0, posinf=None, neginf=None)
-    cy = np.nan_to_num(cy, copy=True, nan=0.0, posinf=None, neginf=None)
-
-    return cx, cy
-
 
 def filter_Speeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, maxSpeed, slowspeeds=1.0):
 
@@ -64,15 +50,16 @@ def whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir,
         all_jpc = [] # y coordinates of the contours
         all_dl = []  #infinitessimal length of breaking crests -> Euclidean distance between two points along a contour
 
+        # load optical flow output -> this is often too large of an array to load into RAM - easier to load incrementally
+        vx, vy, shape = utils.load_opticalFlow(optical_flow_dir, chunk_idx=n)  # optical flow x and y component velocites for each rectified frame -> shape (h, w)
+
         n_frames = meta['core_frame_count']
         for f in tqdm(range(n_frames), colour='blue', desc='Frame', leave=False): #loop through the contours in a frame
 
-            # load optical flow output -> this is often too large of an array to load into RAM - easier to load incrementally
-            vx, vy, shape = utils.load_opticalFlow_frame(optical_flow_dir, chunk_idx=n, frame=f) # optical flow x and y component velocites for each rectified frame -> shape (h, w)
             # remove background current (e.g. estuarine front) before converting to physical speeds
-            vx_detrend = vx - np.median(vx[valid_image]) #TODO: fine for a first pass, may need a spatially varying detrend later if only certain patches are being removed
-            vy_detrend = vy - np.median(vy[valid_image])
-            cx, cy = calculateVelocities(vx_detrend, vy_detrend, fps, gsd, spacing) # metric velocities of optical flow -> shape (h, w) of rectified image
+            # vx_detrend = vx - np.median(vx[valid_image]) #TODO: fine for a first pass, may need a spatially varying detrend later if only certain patches are being removed
+            # vy_detrend = vy - np.median(vy[valid_image])  #FIXME: is this necessary with no substantial camera drift? removing this may switch the direction of vectors making it difficult to isloate only the breaking face
+            cx, cy = utils.relativeVel_2_metricVel(vx[f, :, :], vy[f, :, :], fps, gsd, spacing) # metric velocities of optical flow -> shape (h, w) of rectified image
 
             # Initialize empty lists to store interpolated values
             CXi_list = []
@@ -190,7 +177,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
             ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw = ipc_list[f], jpc_list[f], CXi_list[f], CYi_list[f], dl_list[f]  # Unpack contour coordinate locations and velocity values for a frame "n"
 
             # filter out slow velocities
-            ipc, jpc, CXi, CYi, dl = filter_Speeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, maxSpeed=1.5*phase_speed, slowspeeds=5.0)  ##TODO: find a good cutoff for this (maybe in literature) - 0.6 is ok for now
+            ipc, jpc, CXi, CYi, dl = filter_Speeds(ipc_raw, jpc_raw, CXi_raw, CYi_raw, dl_raw, maxSpeed=1.5*phase_speed, slowspeeds=0.0)  #TODO: find a good cutoff for this (maybe in literature) - 0.6 is ok for now
 
             dXipc = list()  # create empty lists for data
             dYjpc = list()
@@ -305,37 +292,29 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
 
 if __name__ == "__main__":
 
+    config = Config() #load configuration parameters
+
     rectified_images_dir = '/mnt/d/Wave_Breaking/rectified_images'
 
     filtered_contours_dir = '/mnt/d/Wave_Breaking/filtered_contours'     #directory for filtered contour chunks
 
     optical_flow_dir = '/mnt/d/Wave_Breaking/optical_flow'  #directory for optical flow outputs
 
-    fps = 29.97
-
-    # spatial resolution in meters
-    drone = np.load('./drone/1057metadata.npy')
-    dx = float(drone[-2][1])  # dx and dy are the same value
-    gsd = dx  # ground sampling distance
-
     peak_period = 3.88 #seconds pulled from the awac datatable for the corresponding day of the data collection
     phase_speed = 9.81 * peak_period / (2 * np.pi) # phase speed in m/s based on the deep water dispersion relation
 
     whitecap_save_dir = '/mnt/d/Wave_Breaking/20171791057_whitecap_flow'
-    # whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir, whitecap_save_dir, fps, gsd, 5, plot=True, plot_every=25)
+    # whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir, whitecap_save_dir, config.fps, config.gsd, config.spacing, plot=True, plot_every=25)
 
     lambda_save_dir = '/mnt/d/Wave_Breaking/figs/quiver'
-    compute_Lambda(whitecap_save_dir, rectified_images_dir, lambda_save_dir, gsd, phase_speed, speed_bins=0.2, plot=True, plot_every=25)
+    compute_Lambda(whitecap_save_dir, rectified_images_dir, lambda_save_dir, config.gsd, phase_speed, speed_bins=config.speed_bin_width, plot=True, plot_every=25)
 
-
-
-#TODO:Preform a similar histogram to what was originally done for area to the speed data to find outliers.
 
 #TODO: add kalman filter for prediction of where the wave should go, this will help with jumping
 
 #TODO: for the kalman filter stay on the contour level for a little bit. make sure that the contour in one frame matches the contour in the next frame (peach et al 2025 approach). Maybe replace filter contours fucntion with a kalman filter.
 
-
+#TODO: rewrite and add comments to the image processing.py and all other important scripts.
 
 
 

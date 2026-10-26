@@ -201,7 +201,7 @@ def generate_contours(data_dir, save_dir, sanity_plot_dir=None, VARIANCE_THRESH=
             pickle.dump(chunk_contours, f)
 
 
-def generate_contours_parallel(chunk_index, data_dir, save_dir, sanity_plot_dir=None, VARIANCE_THRESH=200, GRADIENT_THRESH=0.5, plot_every=50):
+def generate_contours_parallel(chunk_index, data_dir, save_dir, plot_dir=None, VARIANCE_THRESH=200, GRADIENT_THRESH=0.5, plot_every=50):
 
     # load chunk of rectified images
     chunk, meta = utils.load_chunk(data_dir, chunk_index)  # loads images already in range 0-255
@@ -222,7 +222,7 @@ def generate_contours_parallel(chunk_index, data_dir, save_dir, sanity_plot_dir=
 
         chunk_contours.append(conts)  # store this frame's contours
 
-        if sanity_plot_dir is not None and t % plot_every == 0:
+        if plot_dir is not None and t % plot_every == 0:  #sanity plot
             frame_vis = frame.copy()
             if frame_vis.ndim == 2:
                 frame_vis = cv2.cvtColor(frame_vis, cv2.COLOR_GRAY2BGR)  # convert the image from grayscale to bgr in order to have colored contours
@@ -235,7 +235,7 @@ def generate_contours_parallel(chunk_index, data_dir, save_dir, sanity_plot_dir=
             ax.invert_yaxis()
             ax.set_title(title, fontsize=8)
             fig.savefig(os.path.join(
-                sanity_plot_dir, f'chunk{chunk_index:04d}_frame{t:04d}.png'
+                plot_dir, f'chunk{chunk_index:04d}_frame{t:04d}.png'
             ), dpi=150, bbox_inches='tight')
             plt.close(fig)
 
@@ -243,6 +243,61 @@ def generate_contours_parallel(chunk_index, data_dir, save_dir, sanity_plot_dir=
     out_path = os.path.join(save_dir, f'Unfiltered_contours_chunk_{chunk_index:04d}.pkl')
     with open(out_path, 'wb') as f:
         pickle.dump(chunk_contours, f)
+
+
+def speed_thresh_parallel(chunk_index, contour_dir, optical_flow_dir, save_dir, plot_dir=None, config=None):
+
+    chunk_paths = sorted(glob.glob(os.path.join(contour_dir, '*.pkl')), key=utils.numerical_sort) #directory of all unfiltered contour paths, sorted by the number they have on the end
+
+    contour_list = utils.loadContours(chunk_paths[chunk_index]) #load the unfiltered contours for the current chunk - (N_frames, N_contours, N_points in contour, 1, 2)
+
+    # get optical flow output here match the chunk, optical flow files should be of shape (n_frames, h, w)
+    vx_path = os.path.join(optical_flow_dir, f'vx_{chunk_index:04d}.dat')  # path to optical flow x velocities
+    vy_path = os.path.join(optical_flow_dir, f'vy_{chunk_index:04d}.dat')  # path to y velocities
+    shape = tuple(np.load(os.path.join(optical_flow_dir, f'flow_shape_{chunk_index:04d}.npy')))
+    n_frames, h, w = shape  # shape of the memmaps - n_frames should no longer have that buffer because it was passed through optical flow #
+    # - the last 5 frames in the contours_list variable are not needed
+
+    #histogram setup to incrementally accumulate data
+    dc = config.speed_bin_width # speed bin width in m/s
+    c_bins = np.arange(0, 30 + dc, dc) #speed bins in m/s
+    speed_hist = np.zeros(len(c_bins) - 1) #empty array to incrementally fill with values
+
+    vx = np.memmap(vx_path, dtype='float32', mode='r', shape=shape)  # pull the optical flow quantities for the selected frame - x vals
+    vy = np.memmap(vy_path, dtype='float32', mode='r', shape=shape) # y vals
+
+    for frame_idx in tqdm(range(n_frames), position=chunk_index, desc=f'Chunk:{chunk_index} Frames', colour='yellow', leave=True):  #loop through each frame in the list
+
+        cx_frame, cy_frame = utils.relativeVel_2_metricVel(vx[frame_idx, :, :], vy[frame_idx, :, :], fps=config.fps, spatial_res=config.gsd, spacing=config.spacing) #convert relative px/frame to m/s
+
+        cMag_frame = np.sqrt(cx_frame**2 + cy_frame**2) #magnitude of the optical flow vals: shape (h, w)
+
+        for contour in contour_list[frame_idx]:
+
+            #isolate the optical flow values for a selected contour
+            mask_outline = np.zeros((h, w), dtype=np.uint8) #shape of the rectified image - need a background of zeros to imprint a contour onto
+
+            cv2.fillPoly(mask_outline, [contour], color=[255])  #fills the contour outline - in place modification of mask_outline of shape (h, w)
+
+            filled_mask = mask_outline > 0 # boolean mask of where the contour exists
+
+            # filled_contour = cv2.findNonZero(mask_outline).reshape(-1, 2)  #reshapes to (N_points, 2) - coordinates of the nonzero points in the mask - the filled contour x, y points
+
+            cMag_contour = cMag_frame[filled_mask]
+
+            median_speed = np.median(cMag_contour)  #median speed over a contour in m/s
+            mean_speed = np.mean(cMag_contour)  #mean speed over a contour in m/s
+
+            if mean_speed < 1:  #if the median speed is below a certain threshold - dump it because it will have little impact on the overall energy dissipation rate
+                continue
+
+            bin_idx = np.searchsorted(c_bins, mean_speed, side='right') - 1  #finds the bin containing the contours statistical speed.
+
+            # Count the contour if its speed is within the bin range
+            if 0 <= bin_idx < len(speed_hist):
+                speed_hist[bin_idx] += 1
+
+    return speed_hist, c_bins
 
 
 def smooth_contour(contour, window_size=5):
@@ -304,24 +359,25 @@ def filter_contours(data_dir, optical_flow_dir, save_dir, spacing=5, persistence
         valid_mask = utils.get_mask(images[0])
         valid_image = np.where(valid_mask > 0, True, False)
 
+        vx = np.memmap(vx_path, dtype='float32', mode='r', shape=shape)  # optical flow velocities 'x' frames apart by the spacing (5 in the original case)
+        vy = np.memmap(vy_path, dtype='float32', mode='r', shape=shape) #y velocities
+
         # history = deque(maxlen=5)  #short rolling history of contours for validation of good pixels - motion compensated masks
 
         chunk_filtered_contours = [] #empty list to hold the filtered contours for each chunk
         for frame_idx in tqdm(range(n_frames), leave=False, colour='blue', desc='Frame'):  #loop through all frames in the chunk
             frame_contours = contours[frame_idx] #contours for a particular frame, should have shape (N_contours, N_points in contour, 1, 2)
 
-            vx = np.memmap(vx_path, dtype='float32', mode='r', shape=shape)[frame_idx, :, :]  # optical flow velocities 'x' frames apart by the spacing (5 in the original case)
-            vy = np.memmap(vy_path, dtype='float32', mode='r', shape=shape)[frame_idx, :, :]
-
             #de-trend the flow field - Subtract median flow vector to remove background translation
-            vx_detrend = vx - np.median(vx[valid_image])  #TODO: fine for a first pass, may need a spatially varying detrend later if only certain patches are being removed
-            vy_detrend = vy - np.median(vy[valid_image])  #mask the boarders of the rectified image so areas with no flow do not influence the median calculation
+            # vx_detrend = vx - np.median(vx[valid_image])  #TODO: fine for a first pass, may need a spatially varying detrend later if only certain patches are being removed
+            # vy_detrend = vy - np.median(vy[valid_image])  #mask the boarders of the rectified image so areas with no flow do not influence the median calculation
+            # FIXME: is this necessary with no substantial camera drift? removing this may switch the direction of vectors making it difficult to isloate only the breaking face
 
             #magnitude of the velocities
-            magnitude = np.sqrt(vx_detrend**2 + vy_detrend**2)
+            magnitude = np.hypot(vx[frame_idx, :, :], vy[frame_idx, :, :])
 
             #direction of the flow_field in radians
-            dir = np.arctan2(vy_detrend, vx_detrend)
+            dir = np.arctan2(vy[frame_idx, :, :], vx[frame_idx, :, :])
 
             # #reconstruct the frames binary from the contours
             # frame_binary = np.zeros((h, w), dtype=np.uint8)
@@ -330,8 +386,8 @@ def filter_contours(data_dir, optical_flow_dir, save_dir, spacing=5, persistence
             #     cv2.drawContours(frame_binary, valid_raw, -1, color=(255, 255, 255), thickness=-1) #fills in the contours reconstructing the 2D mask needed for filtering
 
             # #motion compensated pixel persistence filtering
-            # dx = vx_detrend / spacing
-            # dy = vy_detrend / spacing #per frame displacement from the coarse flow (5 frames) we are assuming that the flow is roughly linear here. because fps is high, this is likely to be true.
+            # dx = vx[frame_idx, :, :] / spacing
+            # dy = vy[frame_idx, :, :]/ spacing #per frame displacement from the coarse flow (5 frames) we are assuming that the flow is roughly linear here. because fps is high, this is likely to be true.
 
             # history.append((frame_binary, dx, dy))  # store this frames mask alongside the flow that generated it so that it can be advected in the future
             #
@@ -387,10 +443,6 @@ def filter_contours(data_dir, optical_flow_dir, save_dir, spacing=5, persistence
                     continue
                 # print('contours_rejected:', count) #number of rejected contours thus far
 
-                # smooth the contour using a hanning window
-                smoothed_contour = smooth_contour(frame_contours[j].squeeze())
-                frame_filtered_contours.append(smoothed_contour)
-
                 # # Use magnitude weighted circular variance to determine if contour has coherent motion - works better at rejecting large turbulent foam patches
                 # R = np.abs(np.sum(norm_mag_valid * np.exp(1j * dir_valid)) / np.sum(norm_mag_valid))
                 # # e^i*theta creates a unit vector on a circle in direction of theta. weighted by magnitude. Summed over all pixels in contour. Divided by sum of magnitudes to normalize
@@ -400,6 +452,10 @@ def filter_contours(data_dir, optical_flow_dir, save_dir, spacing=5, persistence
                 #     frame_filtered_contours.append(smoothed_contour)
                 # else:
                 #     count += 1
+
+                # smooth the contour using a hanning window
+                smoothed_contour = smooth_contour(frame_contours[j].squeeze())  #Smoothing should happen last
+                frame_filtered_contours.append(smoothed_contour) #append the smoothed contour to the frame list
 
             if plot and frame_idx % plot_interval == 0:
                 #plot the filtered contours for each frame as a sanity check
@@ -434,6 +490,109 @@ def filter_contours(data_dir, optical_flow_dir, save_dir, spacing=5, persistence
         with open(out_path, 'wb') as f:
             pickle.dump(chunk_filtered_contours, f)
 
+def filter_contours_parallel(chunk_index, unfiltered_contours_dir, optical_flow_dir, save_dir, area_thresh=None, speed_thresh=None,
+                             variance_thresh=None, plot=False, plot_interval=100, rectified_data_dir=None, plot_dir=None, config=None):
+
+    chunk_paths = sorted(glob.glob(os.path.join(unfiltered_contours_dir, '*.pkl')), key=utils.numerical_sort) #load in the list of unfiltered contour chunks
+
+    contour_list = utils.loadContours(chunk_paths[chunk_index]) #load the unfiltered contours for the current chunk - (N_frames, N_contours, N_points in contour, 1, 2)
+
+    # get optical flow output here match the chunk, optical flow files should be of shape (n_frames, h, w)
+    vx_path = os.path.join(optical_flow_dir, f'vx_{chunk_index:04d}.dat')  # path to optical flow x velocities
+    vy_path = os.path.join(optical_flow_dir, f'vy_{chunk_index:04d}.dat')  # path to y velocities     #TODO: replace this stuff with the utils.load_optical_flow function
+    shape = tuple(np.load(os.path.join(optical_flow_dir, f'flow_shape_{chunk_index:04d}.npy')))
+    n_frames, h, w = shape  # shape of the memmaps - n_frames should no longer have that buffer because it was passed through optical flow #
+    # - the last 5 frames in the contours_list variable are not needed
+
+    vx = np.memmap(vx_path, dtype='float32', mode='r', shape=shape)  # pull the optical flow quantities for the selected frame - x vals
+    vy = np.memmap(vy_path, dtype='float32', mode='r', shape=shape) # y vals
+
+    chunk_filtered_contours = []
+    for frame_idx in tqdm(range(n_frames), position=chunk_index, desc=f'Chunk:{chunk_index} Frames', colour='yellow', leave=True):  #loop through each frame in the list
+
+        #loop through each frame and filter the contours
+        cx, cy = utils.relativeVel_2_metricVel(vx[frame_idx, :, :], vy[frame_idx, :, :], fps=config.fps, spatial_res=config.gsd, spacing=config.spacing)  # convert relative px/frame to m/s
+        magnitude = np.hypot(cx, cy) #magnitude of the flow field in m/s
+        direction = np.arctan2(cy, cx) #direction of the flow field in radians
+
+        frame_filtered_contours = [] #empty list to accumulate the filtered contours
+        count = 0 #count for number of rejected contours
+        total_contours = len(contour_list[frame_idx])
+        for contour in contour_list[frame_idx]:   #loop through each contour in the frame
+
+            if contour is None or len(contour) < 5: #if the contour doesn't exist of has less than 5 points
+                count += 1
+                continue
+
+            if cv2.contourArea(contour) < area_thresh: #if the contour is smaller than the minimum required area skip it
+                count += 1
+                continue
+
+            # draw a mask around the contour/ROI to save computation
+            x, y, bw, bh = cv2.boundingRect(contour)  #x, y, width, height of the mask. creates a rectangle enclosing the contour
+            roi = np.zeros((bh, bw), np.uint8)  # mask of zeros the shape of the rectangle
+            cv2.drawContours(roi, [contour], -1, color=255, thickness=-1, offset=(-x, -y)) #draw the contour on the region of interest - fills the contour
+            sel = roi > 0  #selected pixels are where mask > 0
+            contour_mag = magnitude[y:y + bh, x:x + bw][sel]  #clip the magnitude array to be inside the bounding box and select only the points > 0 (where the contour exists)
+            contour_dir = direction[y:y + bh, x:x + bw][sel]  #same thing with direction
+            if contour_mag.size == 0:
+                count += 1
+                continue
+
+            # high unrealistic speed rejection - using speed threshold from histogram of contour median speeds
+            median_speed = np.median(contour_mag)
+            if median_speed > speed_thresh: #if the speed is above the median speed threshold reject it.
+                count += 1
+                continue
+
+            #circular variance filtering - waves should have coherent motion of fast pixels
+            percent_pixel_speed = np.percentile(contour_mag, 50)
+            top_speeds_mask = contour_mag >= percent_pixel_speed #boolean mask - top speeds in the contour are where the contour magnitude is in the upper 50%
+            top_speeds = contour_mag[top_speeds_mask] #apply the mask to the contour magnitudes
+            R = np.abs(np.sum(top_speeds * np.exp(1j * contour_dir[top_speeds_mask]))) / np.sum(top_speeds) #circular variance formula
+            V = 1.0 - R # 0 = all directions the same, 1 = uniform distribution - widely spread
+
+            # if V > variance_thresh:  #skip the contour if it does not pass the filter  #TODO: these filters need refinement so large waves survive, but stationary turbulent patches are filtered out
+            #     count += 1
+            #     continue
+
+            # smooth the contour using a hanning filter
+            smoothed_contour = smooth_contour(contour)
+            frame_filtered_contours.append(smoothed_contour) #shape (N_points, 2)
+
+        if plot and frame_idx % plot_interval == 0:
+            #plot the filtered contours for each frame as a sanity check
+            #load rectified chunk
+            chunk, meta = utils.load_chunk(rectified_data_dir, chunk_index)
+            extent = (meta['x_grid_min'], meta['x_grid_max'], meta['y_grid_min'], meta['y_grid_max']) #extents of the image in world coordinates
+            image = chunk[frame_idx]  #get the frame from the chunk
+
+            fig, axes = plt.subplots(1, 1, figsize=(10, 10))
+            # axes.imshow(image, cmap='gray')
+            plot_contours = [
+                c.reshape(-1, 1, 2).astype(np.int32)  #need to reshape the contour to (n_points, 1, 2) for contour drawing, otherwise a silent error will occur.
+                for c in frame_filtered_contours
+                if c is not None and len(c) >= 3
+            ]
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+            c = cv2.drawContours(image_rgb, plot_contours, -1, color=(255, 0, 0), thickness=2)
+            axes.imshow(c, cmap='gray', extent=extent)
+            axes.invert_yaxis()
+            axes.set_title(f'Filtered Contours for Frame {frame_idx} in Chunk {chunk_index:04d}')
+            plt.tight_layout()
+            plt.savefig(os.path.join(plot_dir, f'Filtered_contours_chunk_{chunk_index:04d}_frame_{frame_idx:04d}.png'))
+            # plt.show()
+            plt.close('all')
+
+        chunk_filtered_contours.append(frame_filtered_contours)
+        # print(f'Rejected {count} out of {total_contours} contours') #debug
+
+    # save all contours for this chunk in one pickle
+    out_path = os.path.join(save_dir, f'Filtered_contours_chunk_{chunk_index:04d}.pkl')
+    with open(out_path, 'wb') as f:
+        pickle.dump(chunk_filtered_contours, f)
+
+
 
 if __name__ == "__main__":
 
@@ -448,12 +607,12 @@ if __name__ == "__main__":
     filtered_contours_save_dir = '/mnt/d/Wave_Breaking/filtered_contours'
     optical_flow_dir = '/mnt/d/Wave_Breaking/optical_flow'
 
-    plot_dir = '/mnt/d/Wave_Breaking/figs/filtered_contours' #directory to save plots of filtered contours
+    # plot_dir = '/mnt/d/Wave_Breaking/figs/filtered_contours' #directory to save plots of filtered contours
+    #
+    # filter_contours(unfiltered_contours_dir, optical_flow_dir, filtered_contours_save_dir, variance_thresh=0.2, plot=True, plot_interval=25, rectified_data_dir=rectified_data_dir, plot_dir=plot_dir)
 
-    filter_contours(unfiltered_contours_dir, optical_flow_dir, filtered_contours_save_dir, variance_thresh=0.2, plot=True, plot_interval=25, rectified_data_dir=rectified_data_dir, plot_dir=plot_dir)
 
-
-
+ #TODO: does computing the mean/median speed from just the edge of the contour give a larger value?
 
 
 

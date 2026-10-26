@@ -418,6 +418,11 @@ def get_mask(frame, erode_px=15):
 #
 
 
+'''WAVE CONTOUR PREDICTION'''
+#TODO: outline: load two frames, i and i+1. Get the contours from frame i. load the farneback optical flow output from frame i. predict where the contour should be on frame i+1
+# match the contour on frame i+1 to the predicted contour. Application of the kalman filter on this prediction. Can use it on singular points along the contour or on the entire contour at once??
+# For speed filtering: take one frame i. for each contour find the statistical speed. build a distribution of these speeds over all frames. Define a threshold based on either an algorithm like
+# otsu or triangle, or just use 2* the standard deviation. 
 
 
 
