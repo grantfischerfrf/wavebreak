@@ -418,11 +418,36 @@ def get_mask(frame, erode_px=15):
 #
 
 
-'''WAVE CONTOUR PREDICTION'''
-#TODO: outline: load two frames, i and i+1. Get the contours from frame i. load the farneback optical flow output from frame i. predict where the contour should be on frame i+1
-# match the contour on frame i+1 to the predicted contour. Application of the kalman filter on this prediction. Can use it on singular points along the contour or on the entire contour at once??
-# For speed filtering: take one frame i. for each contour find the statistical speed. build a distribution of these speeds over all frames. Define a threshold based on either an algorithm like
-# otsu or triangle, or just use 2* the standard deviation. 
+'''PLOT RECTIFIED IMAGES'''
+# n_chunks = len(glob.glob('/mnt/d/Wave_Breaking/rectified_images'))
+#
+# for chunk_idx in range(n_chunks):
+#     chunk, meta = utils.load_chunk('/mnt/d/Wave_Breaking/rectified_images', chunk_idx)
+#
+#     n_frames = meta['core_frame_count']
+#
+#     for frame_idx in tqdm(range(n_frames), colour='yellow', desc='Frame'):
+#         frame = chunk[frame_idx, :, :]
+#
+#         fig = plt.figure(figsize=(10, 10))
+#         ax = fig.add_subplot(111)
+#         # ax.invert_yaxis()
+#         ax.imshow(frame, cmap='gray')
+#         ax.set_yticks([])
+#         ax.set_xticks([])
+#
+#         plt.tight_layout()
+#         plt.savefig(f'/mnt/d/Wave_Breaking/figs/rectified_images/rect_chunk_{chunk_idx}_frame_{frame_idx}.png', dpi=300, bbox_inches='tight')
+#         # plt.show()
+#         plt.close('all')
+
+
+
+'''WAVE CONTOUR PREDICTION - GIF CREATION'''
+plot_dir = '/mnt/d/Wave_Breaking/figs/gifs'
+temp_dir = '/mnt/d/Wave_Breaking/figs/quiver_all'
+name = 'quiver_allSpeeds'
+utils.create_gif(plot_dir, temp_dir, name, fps=30, mp4=True)
 
 
 

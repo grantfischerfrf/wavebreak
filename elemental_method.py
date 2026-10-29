@@ -224,6 +224,8 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
                 fig, axes = plt.subplots(1, 1, figsize=(10, 5))
                 axes.imshow(images[f], cmap='gray')  #extents cannot be used here until the quiver arrows are converted to world coordinates.
                 axes.invert_yaxis()
+                axes.set_xticks([])
+                axes.set_yticks([])
                 for x, y, cx, cy in zip(ipo, jpo, CXo, CYo):
                     axes.arrow(
                         x, y,
@@ -236,7 +238,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
                         facecolor='red'
                     )
 
-                plt.savefig(os.path.join(lambda_save_dir, f'quiver_chunk{n}_frame{f}.png'), bbox_inches='tight')
+                plt.savefig(os.path.join(lambda_save_dir, f'quiver_chunk{n}_frame{f}.png'), dpi=300, bbox_inches='tight')
                 # plt.show()
                 plt.close('all')
 
@@ -274,6 +276,7 @@ def compute_Lambda(whitecap_chunk_dir, rectified_images_dir, lambda_save_dir, gs
     ax1.set_xlabel('Breaking Wave Speed (m/s)')
     ax1.set_ylabel(r'c$^5$ * $\Lambda(c)$ * dc (m$^4$ s$^{-5}$)')
     ax1.set_title('Fifth Moment of the \u039B(c) Distribution')
+    ax1.text(0.05, 0.95, s=f'ε: {epsilon:.4e} W/m²')
     ax1.set_ylim(1e-8, 1e0)
     ax1.grid(axis='y')
     plt.savefig(os.path.join(lambda_save_dir, 'elemental_Lambda(c).png'), dpi=300, bbox_inches='tight')
@@ -306,15 +309,13 @@ if __name__ == "__main__":
     whitecap_save_dir = '/mnt/d/Wave_Breaking/20171791057_whitecap_flow'
     # whitecap_flow(filtered_contours_dir, optical_flow_dir, rectified_images_dir, whitecap_save_dir, config.fps, config.gsd, config.spacing, plot=True, plot_every=25)
 
-    lambda_save_dir = '/mnt/d/Wave_Breaking/figs/quiver'
-    compute_Lambda(whitecap_save_dir, rectified_images_dir, lambda_save_dir, config.gsd, phase_speed, speed_bins=config.speed_bin_width, plot=True, plot_every=25)
+    lambda_save_dir = '/mnt/d/Wave_Breaking/figs/quiver_all'
+    compute_Lambda(whitecap_save_dir, rectified_images_dir, lambda_save_dir, config.gsd, phase_speed, speed_bins=config.speed_bin_width, plot=True, plot_every=1)
 
-
-#TODO: add kalman filter for prediction of where the wave should go, this will help with jumping
-
-#TODO: for the kalman filter stay on the contour level for a little bit. make sure that the contour in one frame matches the contour in the next frame (peach et al 2025 approach). Maybe replace filter contours fucntion with a kalman filter.
 
 #TODO: rewrite and add comments to the image processing.py and all other important scripts.
+
+#TODO: still some false positives on the edge of the screen here.
 
 
 

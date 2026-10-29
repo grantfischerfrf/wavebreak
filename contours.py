@@ -607,12 +607,11 @@ if __name__ == "__main__":
     filtered_contours_save_dir = '/mnt/d/Wave_Breaking/filtered_contours'
     optical_flow_dir = '/mnt/d/Wave_Breaking/optical_flow'
 
-    # plot_dir = '/mnt/d/Wave_Breaking/figs/filtered_contours' #directory to save plots of filtered contours
-    #
-    # filter_contours(unfiltered_contours_dir, optical_flow_dir, filtered_contours_save_dir, variance_thresh=0.2, plot=True, plot_interval=25, rectified_data_dir=rectified_data_dir, plot_dir=plot_dir)
+    plot_dir = '/mnt/d/Wave_Breaking/figs/filtered_contours' #directory to save plots of filtered contours
+
+    filter_contours(unfiltered_contours_dir, optical_flow_dir, filtered_contours_save_dir, variance_thresh=0.2, plot=True, plot_interval=1, rectified_data_dir=rectified_data_dir, plot_dir=plot_dir)
 
 
- #TODO: does computing the mean/median speed from just the edge of the contour give a larger value?
 
 
 

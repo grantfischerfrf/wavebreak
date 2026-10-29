@@ -6,6 +6,7 @@ import re
 from tqdm import tqdm
 import json
 import pickle
+from PIL import Image
 
 from scipy.interpolate import RegularGridInterpolator as reg_interp
 
@@ -443,6 +444,74 @@ def getPixels(image, Ud, Vd, s, method='nearest'):
         ir[mask] = np.nan
 
     return ir
+
+
+def create_gif(plot_dir, temp_dir, name, image_files_prefix=None, fps=2, mp4=False):
+
+    if not mp4:
+        # gif_filename = f"{year}{month}{day}_{camera}_{name}.gif"
+        gif_filename = f'{name}.gif'
+        gif_path = os.path.join(plot_dir, gif_filename)
+
+        # Collect and sort image files
+        if image_files_prefix is not None:
+            images = sorted(glob.glob(os.path.join(temp_dir, image_files_prefix + '*')), key=numerical_sort)
+        else:
+            images = sorted(glob.glob(os.path.join(temp_dir, '*')), key=numerical_sort)
+
+        imgs = [Image.open(img_file) for img_file in images]
+
+        # Save GIF
+        imgs[0].save(gif_path, save_all=True, append_images=imgs[1:], duration=int(1000 / fps), loop=0)
+        print(f"GIF saved to {gif_path}")
+
+        # Save the last frame as PNG
+        # last_frame_filename = f"{year}{month}{day}_{camera}_{name}_last_frame.png"
+        # last_frame_filename = f'{name}_last_frame.png'
+        # last_frame_path = os.path.join(plot_dir, last_frame_filename)
+        # imgs[-1].save(last_frame_path)
+        # print(f"Last frame saved as PNG to {last_frame_path}")
+
+
+    if mp4:
+        print('Creating MP4...')
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        mp4_filename = f'{name}.mp4'
+        mp4_path = os.path.join(plot_dir, mp4_filename)
+
+        # Collect and sort image files
+        if image_files_prefix is not None:
+            images = sorted(glob.glob(os.path.join(temp_dir, image_files_prefix + '*')), key=numerical_sort)
+        else:
+            images = sorted(glob.glob(os.path.join(temp_dir, '*')), key=numerical_sort)
+
+
+        if len(images) == 0:
+            raise ValueError("No images found to create MP4")  #check if images exist
+
+        # Read first image to get size
+        first_frame = cv2.imread(images[0])
+        if first_frame is None:
+            raise IOError(f"Failed to read image {images[0]}")
+
+        height, width, _ = first_frame.shape
+
+        video = cv2.VideoWriter(mp4_path, fourcc, fps, (width, height))
+
+        for img_file in tqdm(images, colour='yellow', desc='Frame'):
+            frame = cv2.imread(img_file)  #read image
+            if frame is None:
+                print(f"Warning: skipping unreadable image {img_file}")
+                continue
+
+            # Ensure consistent size
+            if frame.shape[0] != height or frame.shape[1] != width:
+                frame = cv2.resize(frame, (width, height))
+
+            video.write(frame)
+
+        video.release()
+        print(f"MP4 saved to {mp4_path}")
 
 
 
